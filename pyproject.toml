@@ -1,0 +1,13 @@
+[project]
+name = "neurojico-cognitive-regret-optimizer"
+version = "0.2.0"
+description = "NCRO: A novel metaheuristic optimizer using cognitive regret and counterfactual learning to adaptively balance exploration/exploitation. Benchmarked against PSO, DE, SHADE, L-SHADE, jSO (CEC 2017), NL-SHADE-LBC (CEC 2022), and L-SRTDE (CEC 2024)."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0",
+    "scipy>=1.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/neurojico/ncro"
