@@ -2,7 +2,7 @@
 Comparison algorithms for benchmarking NCRO against state-of-the-art.
 
 Classic baselines:
-  - PSO, DE, GWO, WOA
+  - PSO, DE, GWO, WOA, HHO, ABC, SCA
 
 Adaptive DE family (CEC competition winners):
   - SHADE (2013), L-SHADE (2014), jSO (CEC 2017)
@@ -18,10 +18,14 @@ from .nlshade_lbc import NLSHADELBCOptimizer
 from .lsrtde import LSRTDEOptimizer
 from .gwo import GWOOptimizer
 from .woa import WOAOptimizer
+from .hho import HHOOptimizer
+from .abc import ABCOptimizer
+from .sca import SCAOptimizer
 
 __all__ = [
     "PSOOptimizer", "DEOptimizer",
     "GWOOptimizer", "WOAOptimizer",
+    "HHOOptimizer", "ABCOptimizer", "SCAOptimizer",
     "SHADEOptimizer", "LSHADEOptimizer",
     "jSOOptimizer", "NLSHADELBCOptimizer", "LSRTDEOptimizer",
 ]

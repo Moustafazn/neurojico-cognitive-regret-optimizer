@@ -1,10 +1,12 @@
 # ==================================================================
-#  NCRO: Full Experiment Suite
+#  NCRO: Full Experiment Suite (IEEE Journal Version)
 # ==================================================================
-#  Part 1: Benchmarks NCRO against SOTA algorithms
-#  Part 2: Ablation study (NCRO Full vs 4 ablated variants)
+#  Part 1: Benchmarks NCRO against comparison algorithms
+#  Part 2: Ablation study (NCRO Full vs 5 ablated variants)
+#  Part 3: Scalability analysis (D=10,30,50,100)
+#  Part 4: Computational complexity & runtime evaluation
 #
-#  Tests on 8 benchmark functions × 3 dimensions (10, 30, 50)
+#  Tests on 8 benchmark functions × 4 dimensions (10, 30, 50, 100)
 #  NCRO uses 3N FEs/iter. Fair comparison: others get 3× iterations.
 #
 #  Output structure (research-paper ready):
@@ -13,15 +15,19 @@
 #      - ablation_study.csv           All ablation variants
 #      - friedman_rankings.csv        Average Friedman rankings
 #      - statistical_tests.csv        Wilcoxon p-values + significance
+#      - scalability_analysis.csv     NCRO performance across D
+#      - runtime_analysis.csv         Runtime per run & per iteration
 #
 #    Plots (key representatives only):
 #      - comparison_{func}_D{d}.png   Convergence for key functions × D=30
 #      - ablation_{func}_D{d}.png     Ablation for key functions × D=30
 #      - ranking_summary.png          Bar chart of avg Friedman rankings
+#      - scalability_convergence.png  NCRO convergence across dimensions
 # ==================================================================
 
 import os
 import csv
+import time
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -32,12 +38,14 @@ from ncro.experiment import plot_comparison, plot_ablation, RESULTS_DIR
 from ncro.comparisons import (
     PSOOptimizer, DEOptimizer,
     GWOOptimizer, WOAOptimizer,
+    HHOOptimizer, ABCOptimizer, SCAOptimizer,
     SHADEOptimizer, LSHADEOptimizer,
     jSOOptimizer, NLSHADELBCOptimizer, LSRTDEOptimizer,
 )
 from ncro.ablation import (
-    NCRO_NoRegret, NCRO_NoCounterfactual,
+    NCRO_NoRegret, NCRO_NoCFMem, NCRO_NoCounterfactual,
     NCRO_NoAdaptiveEE, NCRO_NoRegretMemory,
+    NCRO_NoMomentum,
 )
 from ncro.statistics import (
     run_statistical_analysis, save_statistical_results,
@@ -199,13 +207,50 @@ def save_statistical_csv(all_results, funcs, dims, alg_names, ref="NCRO"):
     print(f"  Stats saved -> {fp}")
 
 
+def save_runtime_csv(runtime_data):
+    """Table 5: Runtime analysis — average time per run & per iteration."""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    fp = os.path.join(RESULTS_DIR, "runtime_analysis.csv")
+    with open(fp, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["Algorithm", "Function", "Dim", "Avg_Runtime_sec",
+                     "Avg_Time_Per_Iter_ms", "Iterations", "Num_Runs"])
+        for entry in runtime_data:
+            w.writerow([
+                entry["algorithm"], entry["function"], entry["dim"],
+                f"{entry['avg_runtime']:.4f}",
+                f"{entry['avg_time_per_iter']*1000:.4f}",
+                entry["iterations"], entry["num_runs"],
+            ])
+    print(f"  Runtime saved -> {fp}")
+
+
+def save_scalability_csv(all_results, funcs, dims):
+    """Table 6: NCRO scalability across dimensions."""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    fp = os.path.join(RESULTS_DIR, "scalability_analysis.csv")
+    with open(fp, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["Function", "Dim", "Best", "Mean", "Std", "Median", "Worst"])
+        for fn in funcs:
+            for D in dims:
+                key = f"{fn}_D{D}"
+                if key not in all_results or "NCRO" not in all_results[key]:
+                    continue
+                r = all_results[key]["NCRO"]
+                w.writerow([fn, D, f"{r['best']:.6e}", f"{r['mean']:.6e}",
+                            f"{r['std']:.6e}", f"{r['median']:.6e}",
+                            f"{r['worst']:.6e}"])
+    print(f"  Scalability saved -> {fp}")
+
+
 def plot_ranking_summary(all_ranks, alg_names):
     """Bar chart of overall average Friedman rankings."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
     names = [a for a in alg_names if all_ranks.get(a)]
     avg = [np.mean(all_ranks[a]) for a in names]
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    fig, ax = plt.subplots(figsize=(14, 5))
     colors = ["#E53935" if "NCRO" in n else "#1E88E5" for n in names]
     bars = ax.bar(names, avg, color=colors, width=0.6)
     ax.set_ylabel("Average Friedman Rank (lower is better)", fontsize=11)
@@ -222,6 +267,104 @@ def plot_ranking_summary(all_ranks, alg_names):
     print(f"  Ranking plot saved -> {fp}")
 
 
+def plot_scalability(all_results, funcs, dims):
+    """Plot NCRO convergence curves across dimensions for scalability analysis."""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    key_funcs = ["Sphere", "Rastrigin", "Ackley", "Griewank"]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("NCRO Scalability: Convergence Across Dimensions", fontsize=14, fontweight="bold")
+    colors = {10: "#1E88E5", 30: "#43A047", 50: "#FB8C00", 100: "#E53935"}
+
+    for idx, fn in enumerate(key_funcs):
+        ax = axes[idx // 2][idx % 2]
+        for D in dims:
+            key = f"{fn}_D{D}"
+            if key in all_results and "NCRO" in all_results[key]:
+                res = all_results[key]["NCRO"]
+                mean_c = np.maximum(res["convergence_mean"], 1e-30)
+                iters = np.arange(1, len(mean_c) + 1)
+                ax.semilogy(iters, mean_c, linewidth=1.5, label=f"D={D}", color=colors[D])
+        ax.set_xlabel("Iteration", fontsize=10)
+        ax.set_ylabel("Best Fitness (log)", fontsize=10)
+        ax.set_title(fn, fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    fp = os.path.join(RESULTS_DIR, "scalability_convergence.png")
+    plt.savefig(fp, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Scalability plot saved -> {fp}")
+
+
+def plot_runtime_comparison(runtime_data, alg_names, dims):
+    """Bar chart comparing average runtime across algorithms for D=30."""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Average runtime per algorithm at D=30
+    alg_times = {}
+    for entry in runtime_data:
+        if entry["dim"] == 30:
+            alg = entry["algorithm"]
+            if alg not in alg_times:
+                alg_times[alg] = []
+            alg_times[alg].append(entry["avg_runtime"])
+
+    if not alg_times:
+        return
+
+    names = [a for a in alg_names if a in alg_times]
+    avg_times = [np.mean(alg_times[a]) for a in names]
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    colors = ["#E53935" if "NCRO" in n else "#1E88E5" for n in names]
+    bars = ax.bar(names, avg_times, color=colors, width=0.6)
+    ax.set_ylabel("Average Runtime per Run (seconds)", fontsize=11)
+    ax.set_title("Computational Cost Comparison (D=30, T=500/1500)", fontsize=13, fontweight="bold")
+    for bar, val in zip(bars, avg_times):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                f"{val:.2f}s", ha="center", fontweight="bold", fontsize=8)
+    ax.grid(True, alpha=0.3, axis="y")
+    plt.xticks(rotation=30, ha="right")
+    plt.tight_layout()
+    fp = os.path.join(RESULTS_DIR, "runtime_comparison.png")
+    plt.savefig(fp, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Runtime plot saved -> {fp}")
+
+
+# ──────────────────────────────────────────────────────────────
+# Timed experiment runner (wraps run_experiment with timing)
+# ──────────────────────────────────────────────────────────────
+
+def run_timed_experiment(runtime_data, **kwargs):
+    """Run experiment and measure wall-clock time."""
+    alg_name = kwargs.get("algorithm_name", "NCRO")
+    fn_name = kwargs.get("function_name", "")
+    dim = kwargs.get("dimension", 30)
+    max_iter = kwargs.get("max_iter", 500)
+    num_runs = kwargs.get("num_runs", 30)
+
+    t_start = time.perf_counter()
+    results = run_experiment(**kwargs)
+    t_end = time.perf_counter()
+
+    total_time = t_end - t_start
+    avg_runtime = total_time / num_runs
+    avg_time_per_iter = avg_runtime / max_iter
+
+    runtime_data.append({
+        "algorithm": alg_name,
+        "function": fn_name,
+        "dim": dim,
+        "avg_runtime": avg_runtime,
+        "avg_time_per_iter": avg_time_per_iter,
+        "iterations": max_iter,
+        "num_runs": num_runs,
+    })
+
+    return results
+
+
 # ==================================================================
 # MAIN
 # ==================================================================
@@ -232,43 +375,54 @@ if __name__ == "__main__":
     NUM_RUNS = 30
 
     benchmark_functions = [
-        "Sphere", "Rastrigin", "Rosenbrock", "Ackley",
-        "Griewank", "Schwefel", "Zakharov", "Levy",
+        # Unimodal
+        "Sphere", "Rosenbrock", "Zakharov",
+        # Multimodal
+        "Rastrigin", "Ackley", "Griewank", "Schwefel", "Levy",
+        # Hybrid
+        "Hybrid1", "Hybrid2",
+        # Composition
+        "Composition1", "Composition2",
     ]
-    dimensions = [10, 30, 50]
+    # D ∈ {10, 30, 50, 100} per professor's plan
+    dimensions = [10, 30, 50, 100]
 
-    # Key functions for convergence plots (not all 8×3=24)
-    KEY_PLOT_FUNCTIONS = ["Sphere", "Rastrigin", "Ackley", "Rosenbrock"]
+    # Key functions for convergence plots (one per category)
+    KEY_PLOT_FUNCTIONS = [
+        "Sphere", "Rastrigin", "Ackley", "Rosenbrock",  # unimodal + multimodal
+        "Hybrid1", "Composition1",                        # hybrid + composition
+    ]
     KEY_PLOT_DIM = 30
 
+    # Professor's required algorithms: PSO, DE, GWO, WOA, HHO, ABC, SCA
     algorithms = {
-        "NCRO":         {"class": None, "iter_mult": 1},
-        "PSO":          {"class": PSOOptimizer, "iter_mult": 3},
-        "DE":           {"class": DEOptimizer, "iter_mult": 3},
-        "GWO":          {"class": GWOOptimizer, "iter_mult": 3},
-        "WOA":          {"class": WOAOptimizer, "iter_mult": 3},
-        "SHADE":        {"class": SHADEOptimizer, "iter_mult": 3},
-        "L-SHADE":      {"class": LSHADEOptimizer, "iter_mult": 3},
-        "jSO":          {"class": jSOOptimizer, "iter_mult": 3},
-        "NL-SHADE-LBC": {"class": NLSHADELBCOptimizer, "iter_mult": 3},
-        "L-SRTDE":      {"class": LSRTDEOptimizer, "iter_mult": 3},
+        "NCRO":         {"class": None,              "iter_mult": 1},
+        "PSO":          {"class": PSOOptimizer,      "iter_mult": 3},
+        "DE":           {"class": DEOptimizer,       "iter_mult": 3},
+        "GWO":          {"class": GWOOptimizer,      "iter_mult": 3},
+        "WOA":          {"class": WOAOptimizer,      "iter_mult": 3},
+        "HHO":          {"class": HHOOptimizer,      "iter_mult": 3},
+        "ABC":          {"class": ABCOptimizer,      "iter_mult": 3},
+        "SCA":          {"class": SCAOptimizer,      "iter_mult": 3},
     }
 
+    # Professor's ablation variants (Section 6.8)
     ablation_variants = {
-        "NCRO (Full)":    {"class": None, "iter": NCRO_ITER},
-        "NCRO_NoRegret":  {"class": NCRO_NoRegret, "iter": NCRO_ITER},
-        "NCRO_NoCF":      {"class": NCRO_NoCounterfactual, "iter": NCRO_ITER},
-        "NCRO_NoAdaptEE": {"class": NCRO_NoAdaptiveEE, "iter": NCRO_ITER},
-        "NCRO_NoMemory":  {"class": NCRO_NoRegretMemory, "iter": NCRO_ITER},
+        "NCRO-Full":  {"class": None,                    "iter": NCRO_ITER},
+        "NCRO-R":     {"class": NCRO_NoRegret,           "iter": NCRO_ITER},
+        "NCRO-C":     {"class": NCRO_NoCFMem,            "iter": NCRO_ITER},
+        "NCRO-L":     {"class": NCRO_NoCounterfactual,   "iter": NCRO_ITER},
+        "NCRO-M":     {"class": NCRO_NoMomentum,         "iter": NCRO_ITER},
     }
 
     algorithm_names = list(algorithms.keys())
     ablation_names = list(ablation_variants.keys())
     all_results = {}
     all_stats = {}
+    runtime_data = []  # Collect timing information
 
     # ==============================================================
-    # PART 1: BENCHMARK COMPARISON
+    # PART 1: BENCHMARK COMPARISON (with runtime measurement)
     # ==============================================================
     print("\n" + "#" * 80)
     print("  PART 1: BENCHMARK COMPARISON")
@@ -281,7 +435,8 @@ if __name__ == "__main__":
 
             for alg_name, cfg in algorithms.items():
                 iters = NCRO_ITER * cfg["iter_mult"]
-                results = run_experiment(
+                results = run_timed_experiment(
+                    runtime_data,
                     function_name=function_name, dimension=D,
                     population_size=POPULATION_SIZE, max_iter=iters,
                     num_runs=NUM_RUNS, algorithm_name=alg_name,
@@ -307,7 +462,8 @@ if __name__ == "__main__":
             all_ablation[key] = {}
 
             for var_name, cfg in ablation_variants.items():
-                results = run_experiment(
+                results = run_timed_experiment(
+                    runtime_data,
                     function_name=function_name, dimension=D,
                     population_size=POPULATION_SIZE, max_iter=cfg["iter"],
                     num_runs=NUM_RUNS, algorithm_name=var_name,
@@ -338,8 +494,20 @@ if __name__ == "__main__":
     # Table 4: Statistical tests CSV (Wilcoxon p-values + W/L/T)
     save_statistical_csv(all_results, benchmark_functions, dimensions, algorithm_names, ref="NCRO")
 
+    # Table 5: Runtime analysis CSV
+    save_runtime_csv(runtime_data)
+
+    # Table 6: Scalability analysis CSV
+    save_scalability_csv(all_results, benchmark_functions, dimensions)
+
     # Plot: Ranking summary bar chart
     plot_ranking_summary(all_ranks, algorithm_names)
+
+    # Plot: Scalability convergence across dimensions
+    plot_scalability(all_results, benchmark_functions, dimensions)
+
+    # Plot: Runtime comparison
+    plot_runtime_comparison(runtime_data, algorithm_names, dimensions)
 
     # JSON: Statistical analysis (for reference)
     for D in dimensions:
@@ -352,7 +520,7 @@ if __name__ == "__main__":
             abl_key = f"ablation_{key}"
             if key in all_ablation:
                 abl_stat = run_statistical_analysis(
-                    all_ablation[key], f"ablation_{fn}_D{D}", ablation_names, "NCRO (Full)")
+                    all_ablation[key], f"ablation_{fn}_D{D}", ablation_names, "NCRO-Full")
                 all_stats[abl_key] = abl_stat
     save_statistical_results(all_stats)
 
@@ -377,9 +545,9 @@ if __name__ == "__main__":
                 else: row += f"{'—':>14}"
             print(row)
 
-    print("\n\n" + "=" * 100)
+    print("\n\n" + "=" * 120)
     print("ABLATION STUDY — Mean Fitness")
-    print("=" * 100)
+    print("=" * 120)
     for D in dimensions:
         print(f"\n--- D = {D} ---")
         header = f"{'Function':<14}"
@@ -387,7 +555,7 @@ if __name__ == "__main__":
             short = var.replace("NCRO (Full)", "Full").replace("NCRO_", "")
             header += f"{short:>17}"
         print(header)
-        print("-" * 99)
+        print("-" * 119)
         for fn in benchmark_functions:
             key = f"{fn}_D{D}"
             row = f"{fn:<14}"
@@ -404,14 +572,34 @@ if __name__ == "__main__":
         if all_ranks.get(alg):
             print(f"  {alg:<18}: {np.mean(all_ranks[alg]):.2f}")
 
+    print("\n\n" + "=" * 80)
+    print("RUNTIME ANALYSIS — Average per run (seconds)")
+    print("=" * 80)
+    # Aggregate by algorithm
+    alg_runtimes = {}
+    for entry in runtime_data:
+        alg = entry["algorithm"]
+        if alg in algorithm_names:  # Only benchmark algorithms
+            if alg not in alg_runtimes:
+                alg_runtimes[alg] = []
+            alg_runtimes[alg].append(entry["avg_runtime"])
+    for alg in algorithm_names:
+        if alg in alg_runtimes:
+            avg_t = np.mean(alg_runtimes[alg])
+            print(f"  {alg:<18}: {avg_t:.4f} sec/run")
+
     print("\n" + "=" * 80)
     print("\nResults saved to results/ folder:")
     print("  CSV Tables:")
     print("    benchmark_comparison.csv   — All algorithms × functions × dims")
-    print("    ablation_study.csv         — All ablation variants")
+    print("    ablation_study.csv         — All ablation variants (6 total)")
     print("    friedman_rankings.csv      — Average rankings per test case")
     print("    statistical_tests.csv      — Wilcoxon p-values + win/loss/tie")
+    print("    runtime_analysis.csv       — Runtime per run & per iteration")
+    print("    scalability_analysis.csv   — NCRO performance across D={10,30,50,100}")
     print("  Plots:")
     print("    comparison_*.png           — Convergence for key functions (D=30)")
     print("    ablation_*.png             — Ablation for key functions (D=30)")
     print("    ranking_summary.png        — Overall Friedman ranking bar chart")
+    print("    scalability_convergence.png— NCRO convergence across dimensions")
+    print("    runtime_comparison.png     — Runtime comparison bar chart")

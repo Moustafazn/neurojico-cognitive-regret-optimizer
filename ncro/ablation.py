@@ -1,19 +1,18 @@
 """
 Ablation Study Variants for NCRO.
 
-Each variant uses the SAME V2 motion framework as the full optimizer,
+Each variant uses the SAME motion framework as the full optimizer,
 with exactly ONE component disabled to isolate its contribution.
 
-V2 Full motion equation (reference):
-  candidate = x_i + α(t)(1+M_R)·E_i + β(t)(1-M_R)·H_i + γ(t)·C·D_C
-  Blend: 0.75·candidate + 0.25·Y_A/Y_C
-  Selection: greedy among {x_i, Y_A, Y_C, candidate}
+Full motion equation (reference):
+  candidate = x_i + w·V_i + α(t)(1+M_R)·E_i + β(t)(1-M_R)·H_i + γ(t)·C·D_C
 
-Variants:
-  1. NCRO_NoRegret           — M_R forced to 0 everywhere (forces + q)
-  2. NCRO_NoCounterfactual   — No Y_C, no D_C, no regret, no C_mem
-  3. NCRO_NoAdaptiveEE       — q = q0(t) only (no η_R, η_C, η_P)
-  4. NCRO_NoRegretMemory     — Instantaneous regret (no EMA smoothing)
+Professor's required ablation variants (Section 6.8):
+  NCRO-R:    Regret Memory removed           → NCRO_NoRegret
+  NCRO-C:    Counterfactual Success Memory    → NCRO_NoCFMem
+  NCRO-L:    Counterfactual Learning removed  → NCRO_NoCounterfactual
+  NCRO-M:    Regret-Aware Momentum removed    → NCRO_NoMomentum
+  NCRO-Full: Complete Model                   → NCROOptimizer
 """
 
 import numpy as np
@@ -22,23 +21,23 @@ from .optimizer import NCROResult
 
 
 # ──────────────────────────────────────────────────────────────────
-# Shared V2 default parameters (must match optimizer.py exactly)
+# Shared NCRO default parameters (must match optimizer.py exactly)
 # ──────────────────────────────────────────────────────────────────
-_V2_DEFAULTS = dict(
-    c1=1.5, c2=1.5,
+_NCRO_DEFAULTS = dict(
+    c1=2.0, c2=2.0,
     alpha_max=2.0, alpha_min=0.15,
     beta_min=0.15, beta_max=1.8,
     gamma_max=1.0, gamma_min=0.05,
-    rho=0.70, rho_c=0.60,
-    eta_R=0.20, eta_C=0.12, eta_P=0.70,
-    q_min=0.05, q_max=0.95,
+    rho=0.90, rho_c=0.90,
+    eta_R=0.30, eta_C=0.20, eta_P=0.20,
+    q_min=0.10, q_max=0.90,
     epsilon=1e-12,
 )
 
 
 class NCRO_NoRegret:
     """
-    V2 with regret signal DISABLED.
+    NCRO with regret signal DISABLED.
 
     Changes from Full:
       - M_R is never updated (stays 0)
@@ -58,7 +57,7 @@ class NCRO_NoRegret:
         self.N = population_size
         self.T = max_iter
         self.seed = seed
-        for k, v in _V2_DEFAULTS.items():
+        for k, v in _NCRO_DEFAULTS.items():
             setattr(self, k, v)
 
     def optimize(self) -> NCROResult:
@@ -116,7 +115,7 @@ class NCRO_NoRegret:
 
                 D_C = Y_C - X[i]
 
-                # V2 motion WITHOUT regret modulation (M_R=0)
+                # Motion WITHOUT regret modulation (M_R=0)
                 candidate = (
                     X[i]
                     + alpha_t * E_i          # no (1+M_R) multiplier
@@ -154,9 +153,135 @@ class NCRO_NoRegret:
                           cf_cnt, regret_avg, q_hist)
 
 
+class NCRO_NoCFMem:
+    """
+    NCRO with Counterfactual Success Memory (C_mem) DISABLED.
+    Maps to professor's NCRO-C variant (Section 6.8).
+
+    Changes from Full:
+      - C_mem is forced to 0 (never accumulated)
+      - Y_C IS still generated, regret IS still computed and accumulated in M_R
+      - But γ·C_mem·D_C = γ·0·D_C = 0 (no counterfactual direction force)
+      - q still uses η_R·M_R but η_C·C_mem = 0
+      - Regret still modulates exploration/exploitation forces via (1+M_R) and (1-M_R)
+
+    This isolates the contribution of the counterfactual success memory
+    while preserving regret computation from CF comparison.
+    """
+
+    def __init__(self, objective_function: Callable, dimension: int, bounds: tuple,
+                 population_size: int = 30, max_iter: int = 500, seed: int | None = None, **kwargs):
+        self.func = objective_function
+        self.D = dimension
+        self.L, self.U = bounds
+        self.N = population_size
+        self.T = max_iter
+        self.seed = seed
+        for k, v in _NCRO_DEFAULTS.items():
+            setattr(self, k, v)
+
+    def optimize(self) -> NCROResult:
+        rng = np.random.default_rng(self.seed)
+        N, D, T = self.N, self.D, self.T
+        L, U, eps = self.L, self.U, self.epsilon
+
+        X = rng.uniform(L, U, size=(N, D))
+        F = np.array([self.func(X[i]) for i in range(N)])
+        P = X.copy(); PF = F.copy()
+        g_idx = int(np.argmin(F)); G = P[g_idx].copy(); GF = F[g_idx]
+
+        M_R = np.zeros(N)
+        # C_mem is NOT used — stays zero throughout
+        progress_mem = np.zeros(N)
+
+        convergence = np.zeros(T + 1); convergence[0] = GF
+        expl_cnt = np.zeros(T); xplt_cnt = np.zeros(T)
+        cf_cnt = np.zeros(T); regret_avg = np.zeros(T)
+        q_hist = np.zeros((T, N))
+
+        for t in range(T):
+            tau = t / max(1, T - 1)
+            alpha_t = self.alpha_max * (1 - tau) + self.alpha_min * tau
+            beta_t = self.beta_min * (1 - tau) + self.beta_max * tau
+            gamma_t = self.gamma_max * (1 - tau) + self.gamma_min * tau
+            sigma_t = 1.0 * (1 - tau) + 0.01 * tau
+            q0_t = self.q_max * (1 - tau) + self.q_min * tau
+
+            newX = np.empty_like(X); newF = np.empty(N)
+            it_expl = it_xplt = it_cf = 0; it_reg = 0.0
+
+            for i in range(N):
+                r1, r2 = rng.choice(N, 2, replace=False)
+                E_i = X[r1] - X[r2]
+                u1, u2 = rng.random(), rng.random()
+                H_i = self.c1 * u1 * (P[i] - X[i]) + self.c2 * u2 * (G - X[i])
+
+                # q uses regret but NOT C_mem (η_C * 0 = 0)
+                q_i = q0_t + self.eta_R * M_R[i] - self.eta_P * progress_mem[i]
+                q_i = float(np.clip(q_i, self.q_min, self.q_max))
+                q_hist[t, i] = q_i
+
+                # Y_C IS generated (for regret computation)
+                Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
+                Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
+                noise = 0.02 * sigma_t * (U - L) / np.sqrt(D) * rng.standard_normal(D)
+                Y_A = np.clip(Y_A + noise, L, U)
+                Y_C = np.clip(Y_C, L, U)
+                F_A = self.func(Y_A); F_C = self.func(Y_C)
+
+                # Regret IS computed and accumulated
+                regret = max(0.0, F_A - F_C) / (abs(F_A) + abs(F_C) + eps)
+                regret = float(np.clip(regret, 0, 1))
+                success = float(F_C < F_A - eps)
+                M_R[i] = self.rho * M_R[i] + (1 - self.rho) * regret
+                # C_mem NOT accumulated (stays 0)
+
+                D_C = Y_C - X[i]
+
+                # Motion with regret modulation but NO CF direction (C_mem=0)
+                # γ·0·D_C = 0
+                candidate = (
+                    X[i]
+                    + alpha_t * (1 + M_R[i]) * E_i
+                    + beta_t * (1 - M_R[i]) * H_i
+                    # + gamma_t * 0 * D_C  (C_mem is always 0)
+                )
+
+                if rng.random() < q_i:
+                    candidate = 0.75 * candidate + 0.25 * Y_A; it_expl += 1
+                else:
+                    candidate = 0.75 * candidate + 0.25 * Y_C; it_xplt += 1
+
+                candidate = np.clip(candidate, L, U)
+                F_cand = self.func(candidate)
+
+                # Greedy 4-way selection (Y_C still available)
+                candidates = [X[i], Y_A, Y_C, candidate]
+                values = [F[i], F_A, F_C, F_cand]
+                best_idx = int(np.argmin(values))
+                newX[i] = candidates[best_idx]; newF[i] = values[best_idx]
+                if success > 0: it_cf += 1
+                it_reg += M_R[i]
+
+            F_old = F.copy(); X = newX; F = newF
+            improved = F < PF; P[improved] = X[improved]; PF[improved] = F[improved]
+            k = int(np.argmin(PF))
+            if PF[k] < GF: G = P[k].copy(); GF = PF[k]
+
+            accepted_improvement = np.maximum(0.0, F_old - PF)
+            progress_mem[:] = np.clip(accepted_improvement / (np.abs(F_old) + eps), 0.0, 1.0)
+
+            convergence[t + 1] = GF
+            expl_cnt[t] = it_expl; xplt_cnt[t] = it_xplt
+            cf_cnt[t] = it_cf; regret_avg[t] = it_reg / N
+
+        return NCROResult(G, float(GF), convergence[1:], expl_cnt, xplt_cnt,
+                          cf_cnt, regret_avg, q_hist)
+
+
 class NCRO_NoCounterfactual:
     """
-    V2 with counterfactual candidate DISABLED.
+    NCRO with counterfactual candidate DISABLED.
 
     Changes from Full:
       - No Y_C is generated (no counterfactual thinking)
@@ -177,7 +302,7 @@ class NCRO_NoCounterfactual:
         self.N = population_size
         self.T = max_iter
         self.seed = seed
-        for k, v in _V2_DEFAULTS.items():
+        for k, v in _NCRO_DEFAULTS.items():
             setattr(self, k, v)
 
     def optimize(self) -> NCROResult:
@@ -254,12 +379,12 @@ class NCRO_NoCounterfactual:
 
 class NCRO_NoAdaptiveEE:
     """
-    V2 with adaptive exploration-exploitation balance DISABLED.
+    NCRO with adaptive exploration-exploitation balance DISABLED.
 
     Changes from Full:
       - q = q0(t) = q_max·(1-τ) + q_min·τ   (fixed linear schedule)
       - η_R, η_C, η_P have NO influence on q
-      - M_R and C_mem ARE still computed and DO modulate the V2 forces
+      - M_R and C_mem ARE still computed and DO modulate the forces
       - Counterfactual IS still generated
 
     This tests whether the ADAPTIVE q mechanism contributes
@@ -274,7 +399,7 @@ class NCRO_NoAdaptiveEE:
         self.N = population_size
         self.T = max_iter
         self.seed = seed
-        for k, v in _V2_DEFAULTS.items():
+        for k, v in _NCRO_DEFAULTS.items():
             setattr(self, k, v)
 
     def optimize(self) -> NCROResult:
@@ -331,7 +456,7 @@ class NCRO_NoAdaptiveEE:
 
                 D_C = Y_C - X[i]
 
-                # V2 motion with regret-modulated forces (M_R still active here)
+                # Motion with regret-modulated forces (M_R still active here)
                 candidate = (
                     X[i]
                     + alpha_t * (1 + M_R[i]) * E_i
@@ -367,9 +492,180 @@ class NCRO_NoAdaptiveEE:
                           cf_cnt, regret_avg, q_hist)
 
 
+class NCRO_NoMomentum:
+    """
+    NCRO with regret-aware momentum DISABLED.
+
+    Changes from Full:
+      - The momentum term w·V_i is removed from the motion equation
+      - Motion becomes: x_i + α(1+M_R)·E + β(1-M_R)·H + γ·C·D_C
+        (identical to original professor equation without momentum addition)
+      - All other components (regret, counterfactual, adaptive q, EMA memory,
+        scout mode, diversity recovery) remain identical to Full
+
+    This tests whether the regret-aware momentum contributes to
+    directional continuity and convergence quality.
+    """
+
+    def __init__(self, objective_function: Callable, dimension: int, bounds: tuple,
+                 population_size: int = 30, max_iter: int = 500, seed: int | None = None, **kwargs):
+        self.func = objective_function
+        self.D = dimension
+        self.L, self.U = bounds
+        self.N = population_size
+        self.T = max_iter
+        self.seed = seed
+        for k, v in _NCRO_DEFAULTS.items():
+            setattr(self, k, v)
+
+    def optimize(self) -> NCROResult:
+        rng = np.random.default_rng(self.seed)
+        N, D, T = self.N, self.D, self.T
+        L, U, eps = self.L, self.U, self.epsilon
+        search_range = U - L
+
+        X = rng.uniform(L, U, size=(N, D))
+        F = np.array([self.func(X[i]) for i in range(N)])
+        P = X.copy(); PF = F.copy()
+        g_idx = int(np.argmin(F)); G = P[g_idx].copy(); GF = F[g_idx]
+
+        M_R = np.zeros(N)
+        C_mem = np.zeros(N)
+        progress_mem = np.zeros(N)
+
+        convergence = np.zeros(T + 1); convergence[0] = GF
+        expl_cnt = np.zeros(T); xplt_cnt = np.zeros(T)
+        cf_cnt = np.zeros(T); regret_avg = np.zeros(T)
+        q_hist = np.zeros((T, N))
+
+        for t in range(T):
+            tau = t / max(1, T - 1)
+            alpha_t = self.alpha_max * (1 - tau) + self.alpha_min * tau
+            beta_t = self.beta_min * (1 - tau) + self.beta_max * tau
+            gamma_t = self.gamma_max * (1 - tau) + self.gamma_min * tau
+            sigma_t = 1.0 * (1 - tau) + 0.01 * tau
+            q0_t = self.q_max * (1 - tau) + self.q_min * tau
+
+            pop_diversity = np.mean(np.std(X, axis=0)) / (search_range + eps)
+
+            newX = np.empty_like(X); newF = np.empty(N)
+            it_expl = it_xplt = it_cf = 0; it_reg = 0.0
+
+            for i in range(N):
+                # Regret-driven exploration (same as Full)
+                agent_stuck = (M_R[i] > 0.25 and progress_mem[i] < 0.01)
+                diversity_collapsed = (pop_diversity < 0.005)
+
+                if agent_stuck or diversity_collapsed:
+                    scout_type = rng.integers(4)
+                    center = (L + U) / 2.0
+                    if scout_type == 0:
+                        target = np.clip(2.0 * center - G, L, U)
+                    elif scout_type == 1:
+                        target = rng.uniform(L, U, D)
+                    elif scout_type == 2:
+                        target = np.clip(2.0 * center - P[i], L, U)
+                    else:
+                        r_agent = rng.integers(N)
+                        target = P[r_agent].copy()
+                    E_i = target - X[i]
+                    regret_scale = 0.3 + 0.7 * M_R[i]
+                    E_i *= regret_scale
+                else:
+                    r1, r2 = rng.choice(N, 2, replace=False)
+                    E_i = X[r1] - X[r2]
+                    min_step = M_R[i] * 0.02 * search_range
+                    E_norm = np.linalg.norm(E_i)
+                    if E_norm < min_step and E_norm > eps:
+                        E_i = E_i * (min_step / E_norm)
+
+                u1, u2 = rng.random(), rng.random()
+                H_i = self.c1 * u1 * (P[i] - X[i]) + self.c2 * u2 * (G - X[i])
+
+                q_i = q0_t + self.eta_R * M_R[i] + self.eta_C * C_mem[i] - self.eta_P * progress_mem[i]
+                q_i = float(np.clip(q_i, self.q_min, self.q_max))
+                q_hist[t, i] = q_i
+
+                Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
+                Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
+                noise = 0.02 * sigma_t * search_range / np.sqrt(D) * rng.standard_normal(D)
+                Y_A = np.clip(Y_A + noise, L, U)
+                Y_C = np.clip(Y_C, L, U)
+                F_A = self.func(Y_A); F_C = self.func(Y_C)
+
+                regret = max(0.0, F_A - F_C) / (abs(F_A) + abs(F_C) + eps)
+                regret = float(np.clip(regret, 0, 1))
+                success = float(F_C < F_A - eps)
+                M_R[i] = self.rho * M_R[i] + (1 - self.rho) * regret
+                C_mem[i] = self.rho_c * C_mem[i] + (1 - self.rho_c) * success
+
+                D_C = Y_C - X[i]
+
+                # ====================================================
+                # MOTION EQUATION WITHOUT MOMENTUM (key difference)
+                # No w·V_i term — everything else identical to Full
+                # ====================================================
+                candidate = (
+                    X[i]
+                    # NO momentum: + w_momentum * V_i
+                    + alpha_t * (1 + M_R[i]) * E_i
+                    + beta_t * (1 - M_R[i]) * H_i
+                    + gamma_t * C_mem[i] * D_C
+                )
+
+                if rng.random() < q_i:
+                    candidate = 0.75 * candidate + 0.25 * Y_A; it_expl += 1
+                else:
+                    candidate = 0.75 * candidate + 0.25 * Y_C; it_xplt += 1
+
+                candidate = np.clip(candidate, L, U)
+                F_cand = self.func(candidate)
+
+                # Diversity-aware selection (same as Full)
+                if pop_diversity < 0.01 and M_R[i] > 0.2:
+                    move_candidates = [Y_A, Y_C, candidate]
+                    move_values = [F_A, F_C, F_cand]
+                    best_move = int(np.argmin(move_values))
+                    newX[i] = move_candidates[best_move]
+                    newF[i] = move_values[best_move]
+                else:
+                    candidates = [X[i], Y_A, Y_C, candidate]
+                    values = [F[i], F_A, F_C, F_cand]
+                    best_idx = int(np.argmin(values))
+                    newX[i] = candidates[best_idx]
+                    newF[i] = values[best_idx]
+
+                if success > 0: it_cf += 1
+                it_reg += M_R[i]
+
+            F_old = F.copy()
+            X = newX; F = newF
+            improved = F < PF; P[improved] = X[improved]; PF[improved] = F[improved]
+            k = int(np.argmin(PF))
+            if PF[k] < GF: G = P[k].copy(); GF = PF[k]
+
+            # Diversity recovery (same as Full)
+            if pop_diversity < 0.002 and tau < 0.8:
+                n_reset = max(1, N // 5)
+                worst_idx = np.argsort(F)[-n_reset:]
+                for wi in worst_idx:
+                    X[wi] = rng.uniform(L, U, D)
+                    F[wi] = self.func(X[wi])
+
+            accepted_improvement = np.maximum(0.0, F_old - PF)
+            progress_mem[:] = np.clip(accepted_improvement / (np.abs(F_old) + eps), 0.0, 1.0)
+
+            convergence[t + 1] = GF
+            expl_cnt[t] = it_expl; xplt_cnt[t] = it_xplt
+            cf_cnt[t] = it_cf; regret_avg[t] = it_reg / N
+
+        return NCROResult(G, float(GF), convergence[1:], expl_cnt, xplt_cnt,
+                          cf_cnt, regret_avg, q_hist)
+
+
 class NCRO_NoRegretMemory:
     """
-    V2 with regret memory accumulation DISABLED.
+    NCRO with regret memory accumulation DISABLED.
 
     Changes from Full:
       - Uses INSTANTANEOUS regret and CF success (from previous iteration)
@@ -389,7 +685,7 @@ class NCRO_NoRegretMemory:
         self.N = population_size
         self.T = max_iter
         self.seed = seed
-        for k, v in _V2_DEFAULTS.items():
+        for k, v in _NCRO_DEFAULTS.items():
             setattr(self, k, v)
 
     def optimize(self) -> NCROResult:
@@ -455,7 +751,7 @@ class NCRO_NoRegretMemory:
 
                 D_C = Y_C - X[i]
 
-                # V2 motion using INSTANTANEOUS regret in forces
+                # Motion using INSTANTANEOUS regret in forces
                 candidate = (
                     X[i]
                     + alpha_t * (1 + instant_R[i]) * E_i

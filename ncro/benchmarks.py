@@ -180,4 +180,185 @@ BENCHMARK_FUNCTIONS = {
         "bounds": (0.0, np.pi),
         "optimal": 0.0,  # Actual optimum is negative; we report |F_best - F*|
     },
+    # Hybrid functions
+    "Hybrid1": {
+        "function": None,  # placeholder, set below
+        "bounds": (-100.0, 100.0),
+        "optimal": 0.0,
+    },
+    "Hybrid2": {
+        "function": None,  # placeholder, set below
+        "bounds": (-100.0, 100.0),
+        "optimal": 0.0,
+    },
+    # Composition functions
+    "Composition1": {
+        "function": None,  # placeholder, set below
+        "bounds": (-100.0, 100.0),
+        "optimal": 0.0,
+    },
+    "Composition2": {
+        "function": None,  # placeholder, set below
+        "bounds": (-100.0, 100.0),
+        "optimal": 0.0,
+    },
 }
+
+
+# ──────────────────────────────────────────────────────────────────
+# Hybrid Functions
+# Partition dimensions into groups, apply a different basic function
+# to each group, then sum. Inspired by CEC hybrid functions.
+# ──────────────────────────────────────────────────────────────────
+
+def _sphere_component(z):
+    return float(np.sum(z ** 2))
+
+def _rastrigin_component(z):
+    D = len(z)
+    return float(10 * D + np.sum(z ** 2 - 10 * np.cos(2 * np.pi * z)))
+
+def _rosenbrock_component(z):
+    if len(z) < 2:
+        return float(z[0] ** 2)
+    return float(np.sum(100.0 * (z[1:] - z[:-1] ** 2) ** 2 + (z[:-1] - 1.0) ** 2))
+
+def _ackley_component(z):
+    D = len(z)
+    if D == 0:
+        return 0.0
+    sum_sq = np.sum(z ** 2)
+    sum_cos = np.sum(np.cos(2 * np.pi * z))
+    return float(-20.0 * np.exp(-0.2 * np.sqrt(sum_sq / D))
+                 - np.exp(sum_cos / D) + 20.0 + np.e)
+
+def _griewank_component(z):
+    D = len(z)
+    if D == 0:
+        return 0.0
+    indices = np.arange(1, D + 1)
+    return float(np.sum(z ** 2) / 4000.0
+                 - np.prod(np.cos(z / np.sqrt(indices))) + 1.0)
+
+def _levy_component(z):
+    if len(z) < 2:
+        return float(z[0] ** 2)
+    w = 1.0 + (z - 1.0) / 4.0
+    t1 = np.sin(np.pi * w[0]) ** 2
+    t2 = np.sum((w[:-1] - 1.0) ** 2 * (1.0 + 10.0 * np.sin(np.pi * w[:-1] + 1.0) ** 2))
+    t3 = (w[-1] - 1.0) ** 2 * (1.0 + np.sin(2.0 * np.pi * w[-1]) ** 2)
+    return float(t1 + t2 + t3)
+
+def _schwefel_2_22_component(z):
+    """Schwefel 2.22: sum(|z|) + prod(|z|)."""
+    abs_z = np.abs(z)
+    return float(np.sum(abs_z) + np.prod(np.minimum(abs_z, 1e+15)))
+
+
+def hybrid1(x: np.ndarray) -> float:
+    """
+    Hybrid Function 1: Sphere + Rastrigin + Rosenbrock.
+    Splits D dimensions into 3 groups (30%-30%-40%) and applies a
+    different function to each group. Domain: [-100, 100]. F* = 0.
+    """
+    D = len(x)
+    n1 = max(1, int(0.3 * D))
+    n2 = max(1, int(0.3 * D))
+    z1, z2, z3 = x[:n1], x[n1:n1+n2], x[n1+n2:]
+    return _sphere_component(z1) + _rastrigin_component(z2) + _rosenbrock_component(z3)
+
+
+def hybrid2(x: np.ndarray) -> float:
+    """
+    Hybrid Function 2: Ackley + Griewank + Levy.
+    Splits D dimensions into 3 groups (30%-30%-40%) and applies a
+    different function to each group. Domain: [-100, 100]. F* = 0.
+    """
+    D = len(x)
+    n1 = max(1, int(0.3 * D))
+    n2 = max(1, int(0.3 * D))
+    z1, z2, z3 = x[:n1], x[n1:n1+n2], x[n1+n2:]
+    return _ackley_component(z1) + _griewank_component(z2) + _levy_component(z3)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Composition Functions
+# Combine multiple shifted basic functions with Gaussian weighting.
+# Each sub-function has a different local attractor (shift vector).
+# Inspired by CEC composition function design.
+# ──────────────────────────────────────────────────────────────────
+
+def _gaussian_weight(x, shift, sigma):
+    """Gaussian weight for composition: higher when x is near shift."""
+    d = np.sum((x - shift) ** 2)
+    return np.exp(-d / (2.0 * len(x) * sigma ** 2))
+
+
+def composition1(x: np.ndarray) -> float:
+    """
+    Composition Function 1: Sphere + Rastrigin + Ackley + Rosenbrock + Griewank.
+    Five shifted sub-functions combined with Gaussian weighting.
+    Domain: [-100, 100]. F* = 0 (when all weights collapse at origin).
+    """
+    D = len(x)
+    rng = np.random.RandomState(42)  # deterministic shifts
+    shifts = [rng.uniform(-50, 50, D) for _ in range(5)]
+    # Set first shift to origin so global optimum is at 0
+    shifts[0] = np.zeros(D)
+    sigmas = [10.0, 20.0, 30.0, 20.0, 10.0]
+    lambdas = [1.0, 1.0, 1.0, 1.0, 1.0]
+    biases = [0.0, 100.0, 200.0, 300.0, 400.0]
+    funcs = [_sphere_component, _rastrigin_component, _ackley_component,
+             _rosenbrock_component, _griewank_component]
+
+    weights = np.array([_gaussian_weight(x, s, sig)
+                        for s, sig in zip(shifts, sigmas)])
+    w_sum = np.sum(weights)
+    if w_sum == 0:
+        weights = np.ones(5) / 5.0
+    else:
+        weights /= w_sum
+
+    result = 0.0
+    for i in range(5):
+        z = x - shifts[i]
+        result += weights[i] * (lambdas[i] * funcs[i](z) + biases[i])
+    return float(result)
+
+
+def composition2(x: np.ndarray) -> float:
+    """
+    Composition Function 2: Schwefel_2.22 + Rastrigin + Ackley + Griewank + Sphere.
+    Five shifted sub-functions with different sigma and bias values.
+    Domain: [-100, 100]. F* = 0.
+    """
+    D = len(x)
+    rng = np.random.RandomState(123)  # deterministic shifts (different seed)
+    shifts = [rng.uniform(-50, 50, D) for _ in range(5)]
+    shifts[0] = np.zeros(D)
+    sigmas = [20.0, 10.0, 30.0, 20.0, 10.0]
+    lambdas = [0.1, 1.0, 1.0, 1.0, 1.0]
+    biases = [0.0, 100.0, 200.0, 300.0, 400.0]
+    funcs = [_schwefel_2_22_component, _rastrigin_component, _ackley_component,
+             _griewank_component, _sphere_component]
+
+    weights = np.array([_gaussian_weight(x, s, sig)
+                        for s, sig in zip(shifts, sigmas)])
+    w_sum = np.sum(weights)
+    if w_sum == 0:
+        weights = np.ones(5) / 5.0
+    else:
+        weights /= w_sum
+
+    result = 0.0
+    for i in range(5):
+        z = x - shifts[i]
+        result += weights[i] * (lambdas[i] * funcs[i](z) + biases[i])
+    return float(result)
+
+
+# Wire hybrid/composition functions into registry
+BENCHMARK_FUNCTIONS["Hybrid1"]["function"] = hybrid1
+BENCHMARK_FUNCTIONS["Hybrid2"]["function"] = hybrid2
+BENCHMARK_FUNCTIONS["Composition1"]["function"] = composition1
+BENCHMARK_FUNCTIONS["Composition2"]["function"] = composition2

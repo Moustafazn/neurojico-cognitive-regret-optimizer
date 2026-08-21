@@ -362,7 +362,10 @@ def plot_ablation(
         fontweight="bold",
     )
 
-    colors = ["#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA"]
+    colors = [
+        "#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA", "#00ACC1",
+        "#D81B60", "#546E7A", "#FFB300", "#00897B",
+    ]
 
     # -- Convergence curves --
     ax1 = axes[0]
@@ -372,7 +375,8 @@ def plot_ablation(
             mean_c = np.maximum(res["convergence_mean"], 1e-30)
             iters = np.arange(1, len(mean_c) + 1)
             color = colors[i % len(colors)]
-            ax1.semilogy(iters, mean_c, linewidth=2, label=name, color=color)
+            short = name.replace("NCRO (Full)", "Full").replace("NCRO_", "")
+            ax1.semilogy(iters, mean_c, linewidth=2, label=short, color=color)
     ax1.set_xlabel("Iteration", fontsize=11)
     ax1.set_ylabel("Best Fitness (log scale)", fontsize=11)
     ax1.set_title("Convergence Comparison", fontsize=12)
@@ -387,7 +391,7 @@ def plot_ablation(
     for i, name in enumerate(variant_names):
         if name in ablation_results:
             means.append(ablation_results[name]["mean"])
-            labels.append(name.replace("NCRO-V2", "Full").replace("NCRO_", "No\n"))
+            labels.append(name.replace("NCRO (Full)", "Full").replace("NCRO_", "No\n"))
             bar_colors.append(colors[i % len(colors)])
 
     bars = ax2.bar(labels, means, color=bar_colors, width=0.6)
