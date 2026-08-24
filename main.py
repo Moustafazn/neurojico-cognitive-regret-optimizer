@@ -525,6 +525,28 @@ if __name__ == "__main__":
     save_statistical_results(all_stats)
 
     # ==============================================================
+    # PART 5: CONTROLLED-VARIANT EXPERIMENT
+    # ==============================================================
+    # Tests whether NCRO's coefficient-swapped counterfactual is
+    # superior to alternative strategies (random, OBL, swap-no-regret)
+    print("\n\n" + "#" * 80)
+    print("  PART 5: CONTROLLED-VARIANT EXPERIMENT")
+    print("#" * 80)
+
+    from run_variant_experiment import run_experiment as run_variant_exp, save_results as save_variant_results
+
+    variant_functions = ["Sphere", "Rastrigin", "Ackley", "Rosenbrock", "Griewank", "Schwefel"]
+    variant_rows = run_variant_exp(
+        function_names=variant_functions,
+        dimension=30,
+        population_size=POPULATION_SIZE,
+        max_fes=NCRO_ITER * POPULATION_SIZE * 3,  # 45,000 FEs
+        num_runs=NUM_RUNS,
+        base_seed=2026,
+    )
+    save_variant_results(variant_rows)
+
+    # ==============================================================
     # PRINT FINAL TABLES
     # ==============================================================
     print("\n\n" + "=" * 160)
@@ -597,6 +619,10 @@ if __name__ == "__main__":
     print("    statistical_tests.csv      — Wilcoxon p-values + win/loss/tie")
     print("    runtime_analysis.csv       — Runtime per run & per iteration")
     print("    scalability_analysis.csv   — NCRO performance across D={10,30,50,100}")
+    print("    variant_raw.csv            — Controlled-variant per-run results")
+    print("    variant_summary.csv        — Controlled-variant summary statistics")
+    print("    variant_wilcoxon.csv       — Controlled-variant Wilcoxon tests")
+    print("    variant_friedman.csv       — Controlled-variant Friedman tests")
     print("  Plots:")
     print("    comparison_*.png           — Convergence for key functions (D=30)")
     print("    ablation_*.png             — Ablation for key functions (D=30)")
