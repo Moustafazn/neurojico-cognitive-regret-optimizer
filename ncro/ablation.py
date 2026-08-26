@@ -104,7 +104,16 @@ class NCRO_NoRegret:
                 # Actual and counterfactual candidates
                 Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
                 Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
-                noise = 0.02 * sigma_t * (U - L) / np.sqrt(D) * rng.standard_normal(D)
+                # Regret-modulated position-relative noise + dimension-selective perturbation
+                dist_to_best = np.linalg.norm(X[i] - G)
+                regret_boost = 1.0
+                noise_scale = min(max(dist_to_best * regret_boost, eps),
+                                  (U - L) / np.sqrt(D))
+                max_dims = max(1, int(D * (1 - 0.7 * tau)))
+                n_dims = rng.integers(1, max_dims + 1)
+                dims = rng.choice(D, n_dims, replace=False)
+                noise = np.zeros(D)
+                noise[dims] = (0.02 / np.sqrt(D)) * sigma_t * noise_scale * rng.standard_normal(n_dims)
                 Y_A = np.clip(Y_A + noise, L, U)
                 Y_C = np.clip(Y_C, L, U)
                 F_A = self.func(Y_A); F_C = self.func(Y_C)
@@ -224,7 +233,16 @@ class NCRO_NoCFMem:
                 # Y_C IS generated (for regret computation)
                 Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
                 Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
-                noise = 0.02 * sigma_t * (U - L) / np.sqrt(D) * rng.standard_normal(D)
+                # Regret-modulated position-relative noise + dimension-selective perturbation
+                dist_to_best = np.linalg.norm(X[i] - G)
+                regret_boost = 1.0 + M_R[i] * 5.0
+                noise_scale = min(max(dist_to_best * regret_boost, eps),
+                                  (U - L) / np.sqrt(D))
+                max_dims = max(1, int(D * (1 - 0.7 * tau)))
+                n_dims = rng.integers(1, max_dims + 1)
+                dims = rng.choice(D, n_dims, replace=False)
+                noise = np.zeros(D)
+                noise[dims] = (0.02 / np.sqrt(D)) * sigma_t * noise_scale * rng.standard_normal(n_dims)
                 Y_A = np.clip(Y_A + noise, L, U)
                 Y_C = np.clip(Y_C, L, U)
                 F_A = self.func(Y_A); F_C = self.func(Y_C)
@@ -344,7 +362,16 @@ class NCRO_NoCounterfactual:
 
                 # ONLY actual candidate — NO counterfactual
                 Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
-                noise = 0.02 * sigma_t * (U - L) / np.sqrt(D) * rng.standard_normal(D)
+                # Regret-modulated position-relative noise + dimension-selective perturbation
+                dist_to_best = np.linalg.norm(X[i] - G)
+                regret_boost = 1.0
+                noise_scale = min(max(dist_to_best * regret_boost, eps),
+                                  (U - L) / np.sqrt(D))
+                max_dims = max(1, int(D * (1 - 0.7 * tau)))
+                n_dims = rng.integers(1, max_dims + 1)
+                dims = rng.choice(D, n_dims, replace=False)
+                noise = np.zeros(D)
+                noise[dims] = (0.02 / np.sqrt(D)) * sigma_t * noise_scale * rng.standard_normal(n_dims)
                 Y_A = np.clip(Y_A + noise, L, U)
                 F_A = self.func(Y_A)
 
@@ -442,7 +469,16 @@ class NCRO_NoAdaptiveEE:
 
                 Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
                 Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
-                noise = 0.02 * sigma_t * (U - L) / np.sqrt(D) * rng.standard_normal(D)
+                # Regret-modulated position-relative noise + dimension-selective perturbation
+                dist_to_best = np.linalg.norm(X[i] - G)
+                regret_boost = 1.0 + M_R[i] * 5.0
+                noise_scale = min(max(dist_to_best * regret_boost, eps),
+                                  (U - L) / np.sqrt(D))
+                max_dims = max(1, int(D * (1 - 0.7 * tau)))
+                n_dims = rng.integers(1, max_dims + 1)
+                dims = rng.choice(D, n_dims, replace=False)
+                noise = np.zeros(D)
+                noise[dims] = (0.02 / np.sqrt(D)) * sigma_t * noise_scale * rng.standard_normal(n_dims)
                 Y_A = np.clip(Y_A + noise, L, U)
                 Y_C = np.clip(Y_C, L, U)
                 F_A = self.func(Y_A); F_C = self.func(Y_C)
@@ -588,7 +624,16 @@ class NCRO_NoMomentum:
 
                 Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
                 Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
-                noise = 0.02 * sigma_t * search_range / np.sqrt(D) * rng.standard_normal(D)
+                # Regret-modulated position-relative noise + dimension-selective perturbation
+                dist_to_best = np.linalg.norm(X[i] - G)
+                regret_boost = 1.0 + M_R[i] * 5.0
+                noise_scale = min(max(dist_to_best * regret_boost, eps),
+                                  search_range / np.sqrt(D))
+                max_dims = max(1, int(D * (1 - 0.7 * tau)))
+                n_dims = rng.integers(1, max_dims + 1)
+                dims = rng.choice(D, n_dims, replace=False)
+                noise = np.zeros(D)
+                noise[dims] = (0.02 / np.sqrt(D)) * sigma_t * noise_scale * rng.standard_normal(n_dims)
                 Y_A = np.clip(Y_A + noise, L, U)
                 Y_C = np.clip(Y_C, L, U)
                 F_A = self.func(Y_A); F_C = self.func(Y_C)
@@ -735,7 +780,16 @@ class NCRO_NoRegretMemory:
 
                 Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
                 Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
-                noise = 0.02 * sigma_t * (U - L) / np.sqrt(D) * rng.standard_normal(D)
+                # Regret-modulated position-relative noise + dimension-selective perturbation
+                dist_to_best = np.linalg.norm(X[i] - G)
+                regret_boost = 1.0 + instant_R[i] * 5.0
+                noise_scale = min(max(dist_to_best * regret_boost, eps),
+                                  (U - L) / np.sqrt(D))
+                max_dims = max(1, int(D * (1 - 0.7 * tau)))
+                n_dims = rng.integers(1, max_dims + 1)
+                dims = rng.choice(D, n_dims, replace=False)
+                noise = np.zeros(D)
+                noise[dims] = (0.02 / np.sqrt(D)) * sigma_t * noise_scale * rng.standard_normal(n_dims)
                 Y_A = np.clip(Y_A + noise, L, U)
                 Y_C = np.clip(Y_C, L, U)
                 F_A = self.func(Y_A); F_C = self.func(Y_C)

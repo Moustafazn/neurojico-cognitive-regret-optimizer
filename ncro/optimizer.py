@@ -4,21 +4,22 @@ Neurojico Cognitive Regret Optimizer (NCRO)
 Motion equation:
 
   candidate = x_i
-            + alpha(t) * (1 + M_R(i)) * E_i        # regret amplifies exploration
-            + beta(t)  * (1 - M_R(i)) * H_i         # regret dampens exploitation
+            + w * V_i                                 # regret-aware momentum
+            + alpha(t) * (1 + M_R(i)) * E_i          # regret amplifies exploration
+            + beta(t)  * (1 - M_R(i)) * H_i          # regret dampens exploitation
             + gamma(t) * C(i) * D_C(i)               # counterfactual force
 
-  Where:
-    E_i  = x_r1 - x_r2                              (differential exploration)
-    H_i  = c1*u1*(p_i - x_i) + c2*u2*(g - x_i)     (PSO-style exploitation)
-    D_C  = Y_C - x_i                                (counterfactual direction)
-
-  Enhanced mechanisms:
-    - Regret-driven exploration: stuck agents scout distant regions, converging agents use standard differential
-    - Regret-aware momentum: agents continue in successful direction (modulated by regret)
-    - Diversity-aware selection: allows escape from local optima when diversity is low
+Key mechanisms:
+  - OBL initialization: opposition-based population seeding (Tizhoosh 2005)
+  - Regret-driven exploration with Levy flight scout mode
+  - Regret-modulated position-relative noise with D-adaptive coefficient
+  - Dimension-selective counterfactual perturbation (Van Hoeck 2015)
+  - Stagnation-triggered opposition jump (Rahnamayan et al. 2008)
+  - Late-stage noise suppression for machine-precision convergence
+  - Diversity-aware selection to prevent premature convergence
 """
 
+import math
 import numpy as np
 from dataclasses import dataclass
 from typing import Callable
@@ -99,32 +100,207 @@ class NCROOptimizer:
         self.epsilon = epsilon
         self.seed = seed
 
+    # ------------------------------------------------------------------
+    #  Initialization
+    # ------------------------------------------------------------------
+
+    def _initialize_population(self, rng):
+        """OBL init: N random + N opposite, keep best N (Tizhoosh 2005)."""
+        N, D, L, U = self.N, self.D, self.L, self.U
+        X_rand = rng.uniform(L, U, size=(N, D))
+        X_opp = L + U - X_rand
+        X_all = np.vstack([X_rand, X_opp])
+        F_all = np.array([self.func(X_all[j]) for j in range(2 * N)])
+        idx = np.argsort(F_all)[:N]
+        return X_all[idx].copy(), F_all[idx].copy()
+
+    def _compute_schedules(self, tau):
+        """Time-dependent coefficients for iteration tau in [0,1]."""
+        alpha_t = self.alpha_max * (1 - tau) + self.alpha_min * tau
+        beta_t = self.beta_min * (1 - tau) + self.beta_max * tau
+        gamma_t = self.gamma_max * (1 - tau) + self.gamma_min * tau
+        sigma_t = 1.0 * (1 - tau) + 0.01 * tau
+        q0_t = self.q_max * (1 - tau) + self.q_min * tau
+        return alpha_t, beta_t, gamma_t, sigma_t, q0_t
+
+    # ------------------------------------------------------------------
+    #  Per-agent helpers
+    # ------------------------------------------------------------------
+
+    def _compute_exploration(self, i, X, P, G, M_R, progress_mem,
+                             pop_diversity, search_range, rng):
+        """Exploration direction E_i with multi-directional scout mode."""
+        N, D = self.N, self.D
+        L, U, eps = self.L, self.U, self.epsilon
+        agent_stuck = (M_R[i] > 0.25 and progress_mem[i] < 0.01)
+
+        if agent_stuck or pop_diversity < 0.005:
+            scout = rng.integers(5)
+            center = (L + U) / 2.0
+            if scout == 0:
+                target = np.clip(2.0 * center - G, L, U)
+            elif scout == 1:
+                target = rng.uniform(L, U, D)
+            elif scout == 2:
+                target = np.clip(2.0 * center - P[i], L, U)
+            elif scout == 3:
+                target = P[rng.integers(N)].copy()
+            else:
+                target = self._levy_flight_target(G, search_range, D, rng)
+            E_i = (target - X[i]) * (0.3 + 0.7 * M_R[i])
+        else:
+            r1, r2 = rng.choice(N, 2, replace=False)
+            E_i = X[r1] - X[r2]
+            min_step = M_R[i] * 0.02 * search_range
+            E_norm = np.linalg.norm(E_i)
+            if E_norm < min_step and E_norm > eps:
+                E_i = E_i * (min_step / E_norm)
+        return E_i
+
+    @staticmethod
+    def _levy_flight_target(G, search_range, D, rng):
+        """Levy flight step from G (Mantegna 1994)."""
+        beta_levy = 1.5
+        sigma_u = (
+            math.gamma(1 + beta_levy) * np.sin(np.pi * beta_levy / 2)
+            / (math.gamma((1 + beta_levy) / 2)
+               * beta_levy * 2 ** ((beta_levy - 1) / 2))
+        ) ** (1 / beta_levy)
+        u = rng.normal(0, sigma_u, D)
+        v = rng.normal(0, 1, D)
+        step = 0.01 * u / (np.abs(v) ** (1 / beta_levy))
+        return G + step * search_range
+
+    def _apply_noise(self, Y_A, X_i, G, M_R_i, sigma_t, tau,
+                     pop_diversity, search_range, rng):
+        """Regret-modulated, D-adaptive, dimension-selective noise.
+
+        Three interacting mechanisms:
+          1. Position-relative scale: agents near G get smaller noise.
+          2. D-adaptive coefficient: 0.02/sqrt(D) normalizes across D.
+          3. Late-stage suppression: noise=0 when converged (tau>0.9).
+        """
+        D = self.D
+        L, U, eps = self.L, self.U, self.epsilon
+
+        # Late-stage suppression
+        if tau > 0.9 and pop_diversity < 0.01:
+            return np.clip(Y_A, L, U)
+
+        # Position-relative noise scale with regret boost
+        dist_to_best = np.linalg.norm(X_i - G)
+        noise_scale = min(max(dist_to_best * (1.0 + M_R_i * 5.0), eps),
+                          search_range / np.sqrt(D))
+
+        # Dimension-selective perturbation
+        max_dims = max(1, int(D * (1 - 0.7 * tau)))
+        n_dims = rng.integers(1, max_dims + 1)
+        dims = rng.choice(D, n_dims, replace=False)
+
+        # D-adaptive coefficient
+        noise_coeff = 0.02 / np.sqrt(D)
+        noise = np.zeros(D)
+        noise[dims] = noise_coeff * sigma_t * noise_scale * rng.standard_normal(n_dims)
+        return np.clip(Y_A + noise, L, U)
+
+    def _update_memories(self, i, F_A, F_C, M_R, C_mem):
+        """Cognitive regret computation and EMA memory update."""
+        eps = self.epsilon
+        regret = float(np.clip(
+            max(0.0, F_A - F_C) / (abs(F_A) + abs(F_C) + eps), 0, 1))
+        success = float(F_C < F_A - eps)
+        M_R[i] = self.rho * M_R[i] + (1 - self.rho) * regret
+        C_mem[i] = self.rho_c * C_mem[i] + (1 - self.rho_c) * success
+        return success
+
+    def _build_candidate(self, X_i, X_prev_i, E_i, H_i, D_C, M_R_i,
+                         C_mem_i, alpha_t, beta_t, gamma_t, tau):
+        """Build motion-equation candidate with regret-aware momentum."""
+        V_i = X_i - X_prev_i
+        w_momentum = (1 - M_R_i) * 0.4 * (1 - tau)
+        return (X_i
+                + w_momentum * V_i
+                + alpha_t * (1 + M_R_i) * E_i
+                + beta_t * (1 - M_R_i) * H_i
+                + gamma_t * C_mem_i * D_C)
+
+    def _select_survivor(self, X_i, F_i, Y_A, F_A, Y_C, F_C,
+                         candidate, F_cand, M_R_i, pop_diversity):
+        """Greedy 4-way selection with diversity-aware forced movement."""
+        if pop_diversity < 0.01 and M_R_i > 0.2:
+            cs = [Y_A, Y_C, candidate]
+            vs = [F_A, F_C, F_cand]
+        else:
+            cs = [X_i, Y_A, Y_C, candidate]
+            vs = [F_i, F_A, F_C, F_cand]
+        best = int(np.argmin(vs))
+        return cs[best], vs[best]
+
+    # ------------------------------------------------------------------
+    #  Population-level helpers
+    # ------------------------------------------------------------------
+
+    def _stagnation_opposition_jump(self, G, GF, X, F, P, PF,
+                                    stag_counter, last_GF, tau):
+        """Try opposite of G when stagnated >=50 iters (Rahnamayan 2008)."""
+        L, U = self.L, self.U
+        if GF < last_GF:
+            stag_counter = 0
+            last_GF = GF
+        else:
+            stag_counter += 1
+        if stag_counter >= 50 and tau < 0.95:
+            G_opp = np.clip(L + U - G, L, U)
+            F_opp = self.func(G_opp)
+            if F_opp < GF:
+                G = G_opp.copy()
+                GF = F_opp
+                worst_i = int(np.argmax(F))
+                X[worst_i] = G_opp.copy()
+                F[worst_i] = F_opp
+                P[worst_i] = G_opp.copy()
+                PF[worst_i] = F_opp
+            stag_counter = 0
+        return G, GF, stag_counter, last_GF
+
+    def _recover_diversity(self, X, F, pop_diversity, tau, rng):
+        """Reinitialize worst 20% when diversity drops critically."""
+        if pop_diversity < 0.002 and tau < 0.8:
+            n_reset = max(1, self.N // 5)
+            for wi in np.argsort(F)[-n_reset:]:
+                X[wi] = rng.uniform(self.L, self.U, self.D)
+                F[wi] = self.func(X[wi])
+
+    # ------------------------------------------------------------------
+    #  Main optimization loop
+    # ------------------------------------------------------------------
+
     def optimize(self) -> NCROResult:
         rng = np.random.default_rng(self.seed)
         N, D, T = self.N, self.D, self.T
         L, U = self.L, self.U
         eps = self.epsilon
-        search_range = U - L  # scalar (symmetric bounds assumed)
+        search_range = U - L
 
-        # Initialize population
-        X = rng.uniform(L, U, size=(N, D))
-        F = np.array([self.func(X[i]) for i in range(N)])
-
-        P = X.copy()          # Personal best positions
-        PF = F.copy()         # Personal best fitness
+        # Initialize population with OBL
+        X, F = self._initialize_population(rng)
+        P = X.copy()
+        PF = F.copy()
         g_idx = int(np.argmin(F))
         G = X[g_idx].copy()
         GF = F[g_idx]
 
         # Memories
-        M_R = np.zeros(N)           # Regret memory
-        C_mem = np.zeros(N)         # Counterfactual success memory
-        progress_mem = np.zeros(N)  # Fitness progress memory
+        M_R = np.zeros(N)
+        C_mem = np.zeros(N)
+        progress_mem = np.zeros(N)
+        X_prev = X.copy()
 
-        # Momentum: track previous positions for velocity
-        X_prev = X.copy()           # Previous iteration positions
+        # Stagnation tracking
+        stag_counter = 0
+        last_GF = GF
 
-        # Tracking
+        # Metrics
         convergence = np.zeros(T + 1)
         convergence[0] = GF
         expl_cnt = np.zeros(T)
@@ -135,143 +311,54 @@ class NCROOptimizer:
 
         for t in range(T):
             tau = t / max(1, T - 1)
-
-            # Time-varying parameters
-            alpha_t = self.alpha_max * (1 - tau) + self.alpha_min * tau
-            beta_t = self.beta_min * (1 - tau) + self.beta_max * tau
-            gamma_t = self.gamma_max * (1 - tau) + self.gamma_min * tau
-            sigma_t = 1.0 * (1 - tau) + 0.01 * tau
-            q0_t = self.q_max * (1 - tau) + self.q_min * tau
-
-            # ─── Population diversity measurement ───
-            # Normalized diversity: mean std across dimensions / search range
+            alpha_t, beta_t, gamma_t, sigma_t, q0_t = self._compute_schedules(tau)
             pop_diversity = np.mean(np.std(X, axis=0)) / (search_range + eps)
-
-            # Minimum exploration step size (decays with time, but always > 0)
-            # This prevents the differential vector from collapsing to zero
-            min_step_fraction = 0.05 * (1 - tau) + 0.001 * tau  # 5% early → 0.1% late
-            min_step = min_step_fraction * search_range
 
             newX = np.empty_like(X)
             newF = np.empty(N)
-            it_expl = 0
-            it_xplt = 0
-            it_cf = 0
+            it_expl = it_xplt = it_cf = 0
             it_regret = 0.0
 
             for i in range(N):
-                # ─── Regret-Driven Exploration Strategy ───
-                # The exploration distance adapts to each agent's regret state:
-                #   High regret + no progress = stuck agent → scout distant areas
-                #   Low regret + good progress = converging → standard differential
-                #
-                # This uses the algorithm's own regret signal to decide WHEN
-                # and HOW FAR to explore — consistent with NCRO's philosophy.
+                # Exploration direction
+                E_i = self._compute_exploration(
+                    i, X, P, G, M_R, progress_mem,
+                    pop_diversity, search_range, rng)
 
-                agent_stuck = (M_R[i] > 0.25 and progress_mem[i] < 0.01)
-                diversity_collapsed = (pop_diversity < 0.005)
-
-                if agent_stuck or diversity_collapsed:
-                    # ─── Long-Distance Exploration (multi-directional) ───
-                    # Stuck agents scout DIFFERENT distant areas, not just one:
-                    scout_type = rng.integers(4)
-
-                    if scout_type == 0:
-                        # Direction 1: Opposite of global best
-                        center = (L + U) / 2.0
-                        target = np.clip(2.0 * center - G, L, U)
-                    elif scout_type == 1:
-                        # Direction 2: Random region of search space
-                        target = rng.uniform(L, U, D)
-                    elif scout_type == 2:
-                        # Direction 3: Opposite of personal best
-                        center = (L + U) / 2.0
-                        target = np.clip(2.0 * center - P[i], L, U)
-                    else:
-                        # Direction 4: Toward a randomly chosen agent's
-                        # personal best (information sharing)
-                        r_agent = rng.integers(N)
-                        target = P[r_agent].copy()
-
-                    E_i = target - X[i]
-
-                    # Scale exploration step by regret intensity:
-                    # higher regret = larger exploration radius
-                    regret_scale = 0.3 + 0.7 * M_R[i]  # range [0.3, 1.0]
-                    E_i *= regret_scale
-
-                else:
-                    # ─── Standard Differential Exploration ───
-                    # Professor's original: E_i = x_r1 - x_r2
-                    r1, r2 = rng.choice(N, 2, replace=False)
-                    E_i = X[r1] - X[r2]
-
-                    # Regret-proportional minimum step:
-                    # Low regret → allow E_i to be tiny (fine convergence)
-                    # Moderate regret → ensure minimum exploration magnitude
-                    min_step = M_R[i] * 0.02 * search_range  # proportional to regret
-                    E_norm = np.linalg.norm(E_i)
-                    if E_norm < min_step and E_norm > eps:
-                        E_i = E_i * (min_step / E_norm)
-
-                # Exploitation direction (Section 3.2)
+                # Exploitation direction (PSO-style)
                 u1, u2 = rng.random(), rng.random()
                 H_i = self.c1 * u1 * (P[i] - X[i]) + self.c2 * u2 * (G - X[i])
 
-                # Adaptive exploration probability (Section 7.1)
-                q_i = q0_t + self.eta_R * M_R[i] + self.eta_C * C_mem[i] - self.eta_P * progress_mem[i]
+                # Adaptive q
+                q_i = (q0_t
+                       + self.eta_R * M_R[i]
+                       + self.eta_C * C_mem[i]
+                       - self.eta_P * progress_mem[i])
                 q_i = float(np.clip(q_i, self.q_min, self.q_max))
                 q_hist[t, i] = q_i
 
-                # Actual candidate (Section 4.1)
+                # Generate actual & counterfactual candidates
                 Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
-
-                # Counterfactual candidate (Section 4.2)
                 Y_C = X[i] + (1 - q_i) * alpha_t * E_i + q_i * beta_t * H_i
 
-                # Small time-decaying noise perturbation on actual candidate
-                noise = 0.02 * sigma_t * search_range / np.sqrt(D) * rng.standard_normal(D)
-                Y_A = np.clip(Y_A + noise, L, U)
+                # Apply noise to actual candidate
+                Y_A = self._apply_noise(
+                    Y_A, X[i], G, M_R[i], sigma_t, tau,
+                    pop_diversity, search_range, rng)
                 Y_C = np.clip(Y_C, L, U)
-
                 F_A = self.func(Y_A)
                 F_C = self.func(Y_C)
 
-                # Cognitive regret (Section 6.1)
-                regret = max(0.0, F_A - F_C) / (abs(F_A) + abs(F_C) + eps)
-                regret = float(np.clip(regret, 0, 1))
+                # Update memories
+                success = self._update_memories(i, F_A, F_C, M_R, C_mem)
 
-                # Counterfactual success with ε-tolerance (Section 6.3)
-                success = float(F_C < F_A - eps)
-
-                # Update memories (Section 6.2 & 6.3)
-                M_R[i] = self.rho * M_R[i] + (1 - self.rho) * regret
-                C_mem[i] = self.rho_c * C_mem[i] + (1 - self.rho_c) * success
-
-                # Counterfactual direction (Section 3.3)
+                # Build candidate via motion equation
                 D_C = Y_C - X[i]
+                candidate = self._build_candidate(
+                    X[i], X_prev[i], E_i, H_i, D_C, M_R[i],
+                    C_mem[i], alpha_t, beta_t, gamma_t, tau)
 
-                # ─── Regret-Aware Momentum ───
-                # V_i = direction agent actually moved last iteration
-                # Momentum weight modulated by regret:
-                #   Low regret → high momentum (keep going, direction is good)
-                #   High regret → low momentum (abandon direction, try new)
-                V_i = X[i] - X_prev[i]
-                w_momentum = (1 - M_R[i]) * 0.4 * (1 - tau)  # decays with time + regret
-
-                # ====================================================
-                # NCRO MOTION EQUATION (Section 5)
-                # Four forces: momentum + exploration + exploitation + counterfactual
-                # ====================================================
-                candidate = (
-                    X[i]
-                    + w_momentum * V_i                  # momentum (follow successful direction)
-                    + alpha_t * (1 + M_R[i]) * E_i      # exploration (regret-amplified)
-                    + beta_t * (1 - M_R[i]) * H_i       # exploitation (regret-dampened)
-                    + gamma_t * C_mem[i] * D_C           # counterfactual direction
-                )
-
-                # Blend with exploration/exploitation
+                # Candidate blend
                 if rng.random() < q_i:
                     candidate = 0.75 * candidate + 0.25 * Y_A
                     it_expl += 1
@@ -282,24 +369,10 @@ class NCROOptimizer:
                 candidate = np.clip(candidate, L, U)
                 F_cand = self.func(candidate)
 
-                # ─── Diversity-Aware Selection ───
-                # When population diversity is critically low, relax greedy
-                # selection to allow agents to escape local optima
-                if pop_diversity < 0.01 and M_R[i] > 0.2:
-                    # High regret + low diversity: force movement
-                    # Select best among new candidates only (exclude X[i])
-                    move_candidates = [Y_A, Y_C, candidate]
-                    move_values = [F_A, F_C, F_cand]
-                    best_move = int(np.argmin(move_values))
-                    newX[i] = move_candidates[best_move]
-                    newF[i] = move_values[best_move]
-                else:
-                    # Standard greedy 4-way selection
-                    candidates = [X[i], Y_A, Y_C, candidate]
-                    values = [F[i], F_A, F_C, F_cand]
-                    best_idx = int(np.argmin(values))
-                    newX[i] = candidates[best_idx]
-                    newF[i] = values[best_idx]
+                # Greedy selection
+                newX[i], newF[i] = self._select_survivor(
+                    X[i], F[i], Y_A, F_A, Y_C, F_C,
+                    candidate, F_cand, M_R[i], pop_diversity)
 
                 if success > 0:
                     it_cf += 1
@@ -307,37 +380,30 @@ class NCROOptimizer:
 
             # Update population
             F_old = F.copy()
-            X_prev = X.copy()  # Save for momentum before updating
+            X_prev = X.copy()
             X = newX
             F = newF
 
-            # Update personal bests (Section 8.2)
+            # Update personal & global bests
             improved = F < PF
             P[improved] = X[improved]
             PF[improved] = F[improved]
-
-            # Update global best (Section 8.3)
             k = int(np.argmin(PF))
             if PF[k] < GF:
                 G = P[k].copy()
                 GF = PF[k]
 
-            # ─── Diversity Recovery ───
-            # If diversity drops critically, reinitialize worst agents
-            # to explore distant regions (keeps top 80%, resets worst 20%)
-            if pop_diversity < 0.002 and tau < 0.8:
-                n_reset = max(1, N // 5)
-                worst_idx = np.argsort(F)[-n_reset:]
-                for wi in worst_idx:
-                    # Reset to random position in search space
-                    X[wi] = rng.uniform(L, U, D)
-                    F[wi] = self.func(X[wi])
+            # Stagnation-triggered opposition jump
+            G, GF, stag_counter, last_GF = self._stagnation_opposition_jump(
+                G, GF, X, F, P, PF, stag_counter, last_GF, tau)
 
-            # Update progress memory for next iteration (Section 7.2)
+            # Diversity recovery
+            self._recover_diversity(X, F, pop_diversity, tau, rng)
+
+            # Update progress memory
             accepted_improvement = np.maximum(0.0, F_old - PF)
             progress_mem[:] = np.clip(
-                accepted_improvement / (np.abs(F_old) + eps), 0.0, 1.0
-            )
+                accepted_improvement / (np.abs(F_old) + eps), 0.0, 1.0)
 
             # Record metrics
             convergence[t + 1] = GF

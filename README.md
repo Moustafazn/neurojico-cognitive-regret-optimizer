@@ -25,12 +25,50 @@ Where:
 
 The exploration direction E_i adapts based on each agent's regret state:
 - **Low regret** (agent doing well): standard `E_i = x_r1 − x_r2` with regret-proportional minimum step
-- **High regret + stuck** (M_R > 0.25, no progress): long-distance scouting toward 4 distant areas:
+- **High regret + stuck** (M_R > 0.25, no progress): long-distance scouting toward 5 distant areas:
   1. Opposite of global best (search unexplored regions)
   2. Random search space position (pure exploration)
   3. Opposite of personal best (escape personal basin)
   4. Another agent's personal best (information sharing)
+  5. Lévy flight from global best (heavy-tailed escape for deceptive landscapes; Mantegna 1994)
 - Scout step size scales with regret: `E_i *= (0.3 + 0.7·M_R)` — higher regret = larger radius
+
+### Regret-Modulated Position-Relative Noise *(New)*
+
+Noise perturbation adapts to two cognitive signals:
+- **Distance to best**: agents near the optimum have less "cognitive uncertainty" → smaller noise (Van Hoeck 2015: "nearest possible world")
+- **Regret level**: high regret boosts noise to enable escape from local optima (Yager 2017: regret modulates decision intensity)
+
+```
+noise_scale = min(max(‖X_i − G‖ × (1 + 5·M_R), ε), range/√D)
+```
+
+### Dimension-Selective Counterfactual Perturbation *(New)*
+
+Perturb a random subset of dimensions, not all D simultaneously:
+- **Early search**: many dimensions (broad exploration)
+- **Late search**: fewer dimensions (focused precision)
+- Grounded in Van Hoeck (2015): "counterfactuals require the fewest independent changes"
+
+### Dimension-Adaptive Noise Coefficient *(New)*
+
+Noise coefficient scales by 1/√D to normalize total perturbation energy across dimensions. Prevents multiplicative blowup in product-structure functions (e.g. Schwefel_2.22 in Composition2) at high D.
+
+```
+noise_coeff = 0.02 / √D
+```
+
+### Opposition-Based Learning (OBL) Initialization *(New)*
+
+Generate N random + N opposite candidates, keep best N. Classical OBL (Tizhoosh 2005) remains the standard initialization strategy in 2025–2026 optimizers (Shaban & Zeebaree 2026; Yu et al. 2026). For functions with optima near boundaries (e.g. Schwefel at x*=420.97 in [-500,500]), the opposite of a random point near -420 lands near +420 — directly at the optimum.
+
+### Stagnation-Triggered Opposition Jump *(New)*
+
+When the global best stagnates for 50 iterations, try the opposite point G_opp = L+U−G. For deceptive functions, the true optimum may be in the opposite basin. Builds on opposition-based DE (Rahnamayan et al. 2008) and recent fine-grained stagnation detection (Bai et al. 2026) and stagnation-gated frameworks (Aydemir 2026).
+
+### Late-Stage Noise Suppression *(New)*
+
+When converged (τ > 0.9 and diversity < 0.01), suppress noise completely for machine-precision convergence. When cognitive uncertainty is low, perturbation only degrades final quality (Van Hoeck 2015). Consistent with stagnation-detection-based mutation suppression in recent PSO variants (Zhang et al. 2026).
 
 ## Key Mechanisms
 

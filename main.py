@@ -245,10 +245,16 @@ def save_scalability_csv(all_results, funcs, dims):
 
 
 def plot_ranking_summary(all_ranks, alg_names):
-    """Bar chart of overall average Friedman rankings."""
+    """Bar chart of overall average Friedman rankings. """
     os.makedirs(RESULTS_DIR, exist_ok=True)
     names = [a for a in alg_names if all_ranks.get(a)]
     avg = [np.mean(all_ranks[a]) for a in names]
+
+    # Save data to JSON
+    import json as _json
+    json_path = os.path.join(RESULTS_DIR, "ranking_summary_data.json")
+    with open(json_path, "w") as f:
+        _json.dump({"names": names, "avg_ranks": avg}, f, indent=2)
 
     fig, ax = plt.subplots(figsize=(14, 5))
     colors = ["#E53935" if "NCRO" in n else "#1E88E5" for n in names]
@@ -269,14 +275,30 @@ def plot_ranking_summary(all_ranks, alg_names):
 
 def plot_scalability(all_results, funcs, dims):
     """Plot NCRO convergence curves across dimensions for scalability analysis."""
+    import json as _json
     os.makedirs(RESULTS_DIR, exist_ok=True)
     key_funcs = ["Sphere", "Rastrigin", "Ackley", "Griewank"]
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("NCRO Scalability: Convergence Across Dimensions", fontsize=14, fontweight="bold")
+    suffix_letters = ["a", "b", "c", "d"]
     colors = {10: "#1E88E5", 30: "#43A047", 50: "#FB8C00", 100: "#E53935"}
 
+    # Save scalability data to JSON for regeneration
+    json_data = {"key_funcs": key_funcs, "dims": dims, "curves": {}}
+    for fn in key_funcs:
+        json_data["curves"][fn] = {}
+        for D in dims:
+            key = f"{fn}_D{D}"
+            if key in all_results and "NCRO" in all_results[key]:
+                res = all_results[key]["NCRO"]
+                json_data["curves"][fn][str(D)] = {
+                    "convergence_mean": [float(v) for v in res["convergence_mean"]],
+                }
+    json_path = os.path.join(RESULTS_DIR, "scalability_convergence_data.json")
+    with open(json_path, "w") as f:
+        _json.dump(json_data, f, indent=2)
+
     for idx, fn in enumerate(key_funcs):
-        ax = axes[idx // 2][idx % 2]
+        letter = suffix_letters[idx]
+        fig, ax = plt.subplots(figsize=(8, 6))
         for D in dims:
             key = f"{fn}_D{D}"
             if key in all_results and "NCRO" in all_results[key]:
@@ -284,21 +306,22 @@ def plot_scalability(all_results, funcs, dims):
                 mean_c = np.maximum(res["convergence_mean"], 1e-30)
                 iters = np.arange(1, len(mean_c) + 1)
                 ax.semilogy(iters, mean_c, linewidth=1.5, label=f"D={D}", color=colors[D])
-        ax.set_xlabel("Iteration", fontsize=10)
-        ax.set_ylabel("Best Fitness (log)", fontsize=10)
-        ax.set_title(fn, fontsize=12)
-        ax.legend(fontsize=9)
+        ax.set_xlabel("Iteration", fontsize=11)
+        ax.set_ylabel("Best Fitness (log scale)", fontsize=11)
+        ax.set_title(f"NCRO Scalability — {fn}", fontsize=13, fontweight="bold")
+        ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 
-    plt.tight_layout()
-    fp = os.path.join(RESULTS_DIR, "scalability_convergence.png")
-    plt.savefig(fp, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"  Scalability plot saved -> {fp}")
+        plt.tight_layout()
+        fp = os.path.join(RESULTS_DIR, f"scalability_convergence_{letter}.png")
+        plt.savefig(fp, dpi=300, bbox_inches="tight")
+        plt.close()
+        print(f"  Scalability plot saved -> {fp}")
 
 
 def plot_runtime_comparison(runtime_data, alg_names, dims):
     """Bar chart comparing average runtime across algorithms for D=30."""
+    import json as _json
     os.makedirs(RESULTS_DIR, exist_ok=True)
     # Average runtime per algorithm at D=30
     alg_times = {}
@@ -314,6 +337,11 @@ def plot_runtime_comparison(runtime_data, alg_names, dims):
 
     names = [a for a in alg_names if a in alg_times]
     avg_times = [np.mean(alg_times[a]) for a in names]
+
+    # Save data to JSON
+    json_path = os.path.join(RESULTS_DIR, "runtime_comparison_data.json")
+    with open(json_path, "w") as f:
+        _json.dump({"names": names, "avg_times": avg_times}, f, indent=2)
 
     fig, ax = plt.subplots(figsize=(14, 5))
     colors = ["#E53935" if "NCRO" in n else "#1E88E5" for n in names]
@@ -623,9 +651,15 @@ if __name__ == "__main__":
     print("    variant_summary.csv        — Controlled-variant summary statistics")
     print("    variant_wilcoxon.csv       — Controlled-variant Wilcoxon tests")
     print("    variant_friedman.csv       — Controlled-variant Friedman tests")
-    print("  Plots:")
-    print("    comparison_*.png           — Convergence for key functions (D=30)")
-    print("    ablation_*.png             — Ablation for key functions (D=30)")
-    print("    ranking_summary.png        — Overall Friedman ranking bar chart")
-    print("    scalability_convergence.png— NCRO convergence across dimensions")
-    print("    runtime_comparison.png     — Runtime comparison bar chart")
+    print("  Plots (each figure saved individually for paper arrangement):")
+    print("    comparison_*.png                — Convergence for key functions (D=30)")
+    print("    ablation_*_a.png               — Ablation convergence curves")
+    print("    ablation_*_b.png               — Ablation final performance bars")
+    print("    ranking_summary.png            — Overall Friedman ranking bar chart")
+    print("    scalability_convergence_a.png  — NCRO scalability: Sphere")
+    print("    scalability_convergence_b.png  — NCRO scalability: Rastrigin")
+    print("    scalability_convergence_c.png  — NCRO scalability: Ackley")
+    print("    scalability_convergence_d.png  — NCRO scalability: Griewank")
+    print("    runtime_comparison.png         — Runtime comparison bar chart")
+    print("  JSON data (for regeneration by generate_paper_figures.py):")
+    print("    *_data.json                    — Plot data for all figures")

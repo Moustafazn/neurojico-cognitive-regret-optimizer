@@ -168,7 +168,18 @@ def run_ncro_variant(func, lower, upper, dimension, population_size,
 
             # ─── ACTUAL CANDIDATE Y_A (identical for all variants) ───
             Y_A = X[i] + q_i * alpha_t * E_i + (1 - q_i) * beta_t * H_i
-            noise = 0.02 * sigma_t * search_range / np.sqrt(D) * rng.standard_normal(D)
+
+            # Regret-modulated position-relative noise + dimension-selective perturbation
+            dist_to_best = np.linalg.norm(X[i] - G)
+            regret_boost = 1.0 + M_R[i] * 5.0
+            noise_scale = min(max(dist_to_best * regret_boost, eps),
+                              search_range / np.sqrt(D))
+            max_dims = max(1, int(D * (1 - 0.7 * tau)))
+            n_dims = rng.integers(1, max_dims + 1)
+            dims = rng.choice(D, n_dims, replace=False)
+            noise = np.zeros(D)
+            noise[dims] = (0.02 / np.sqrt(D)) * sigma_t * noise_scale * rng.standard_normal(n_dims)
+
             Y_A = np.clip(Y_A + noise, L, U)
             F_A = func(Y_A)
 

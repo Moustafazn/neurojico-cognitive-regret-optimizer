@@ -216,30 +216,39 @@ def save_results_json(results: dict, algorithm_name: str, function_name: str) ->
 
 def plot_results(results: dict, function_name: str, algorithm_name: str = "NCRO") -> None:
     """
-    Generate and save high-quality visualization plots.
+    Generate and save high-quality visualization plots as separate figures.
 
-    Creates a figure with:
-      - Left:  Convergence curve (log scale) with std-dev band
-      - Right: Search-behavior metrics bar chart (ER, XR, CSR)
+    Saves two individual figures to results/ folder as high-quality PNG (300 DPI):
+      - {alg}_{func}_results_a.png  — Convergence curve (log scale) with std-dev band
+      - {alg}_{func}_results_b.png  — Search-behavior metrics bar chart (ER, XR, CSR)
 
-    Saves to results/ folder as high-quality PNG (300 DPI).
+    Also saves plot data to JSON for later regeneration by generate_paper_figures.py.
     """
     _ensure_results_dir()
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle(
-        f"{algorithm_name} Performance on {function_name}",
-        fontsize=14,
-        fontweight="bold",
-    )
+    safe_alg = algorithm_name.lower().replace(" ", "_").replace("-", "_")
+    safe_func = function_name.lower().replace(" ", "_")
 
-    # -- Convergence Curve --
-    ax1 = axes[0]
+    # -- Save plot data to JSON for later regeneration --
+    json_path = os.path.join(RESULTS_DIR, f"{safe_alg}_{safe_func}_plot_data.json")
+    plot_data = {
+        "algorithm_name": algorithm_name,
+        "function_name": function_name,
+        "convergence_mean": [float(v) for v in results["convergence_mean"]],
+        "convergence_std": [float(v) for v in results["convergence_std"]],
+        "exploration_ratio": float(results["exploration_ratio"]),
+        "exploitation_ratio": float(results["exploitation_ratio"]),
+        "cf_success_rate": float(results["cf_success_rate"]),
+    }
+    with open(json_path, "w") as f:
+        json.dump(plot_data, f, indent=2)
+
+    # -- Figure (a): Convergence Curve --
+    fig, ax1 = plt.subplots(figsize=(8, 6))
     iters = np.arange(1, len(results["convergence_mean"]) + 1)
     mean_c = results["convergence_mean"]
     std_c = results["convergence_std"]
 
-    # Protect against zero/negative values for log scale
     mean_c_safe = np.maximum(mean_c, 1e-30)
     ax1.semilogy(iters, mean_c_safe, "b-", linewidth=1.5, label="Mean")
     ax1.fill_between(
@@ -251,12 +260,19 @@ def plot_results(results: dict, function_name: str, algorithm_name: str = "NCRO"
     )
     ax1.set_xlabel("Iteration", fontsize=11)
     ax1.set_ylabel("Best Fitness (log scale)", fontsize=11)
-    ax1.set_title("Convergence Curve", fontsize=12)
+    ax1.set_title(f"{algorithm_name} on {function_name} — Convergence Curve",
+                  fontsize=13, fontweight="bold")
     ax1.legend(fontsize=10)
     ax1.grid(True, alpha=0.3)
 
-    # -- Search Behavior Metrics --
-    ax2 = axes[1]
+    plt.tight_layout()
+    fp_a = os.path.join(RESULTS_DIR, f"{safe_alg}_{safe_func}_results_a.png")
+    plt.savefig(fp_a, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Plot saved -> {fp_a}")
+
+    # -- Figure (b): Search Behavior Metrics --
+    fig, ax2 = plt.subplots(figsize=(8, 6))
     metrics = {
         "ER\n(Exploration)": results["exploration_ratio"],
         "XR\n(Exploitation)": results["exploitation_ratio"],
@@ -265,7 +281,8 @@ def plot_results(results: dict, function_name: str, algorithm_name: str = "NCRO"
     colors = ["#2196F3", "#FF9800", "#4CAF50"]
     bars = ax2.bar(metrics.keys(), metrics.values(), color=colors, width=0.5)
     ax2.set_ylabel("Ratio", fontsize=11)
-    ax2.set_title("Search Behavior Metrics", fontsize=12)
+    ax2.set_title(f"{algorithm_name} on {function_name} — Search Behavior Metrics",
+                  fontsize=13, fontweight="bold")
     ax2.set_ylim(0, 1.0)
     for bar, val in zip(bars, metrics.values()):
         ax2.text(
@@ -280,14 +297,10 @@ def plot_results(results: dict, function_name: str, algorithm_name: str = "NCRO"
     ax2.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
-    safe_alg = algorithm_name.lower().replace(" ", "_").replace("-", "_")
-    safe_func = function_name.lower().replace(" ", "_")
-    filename = f"{safe_alg}_{safe_func}_results.png"
-    filepath = os.path.join(RESULTS_DIR, filename)
-    plt.savefig(filepath, dpi=300, bbox_inches="tight")
+    fp_b = os.path.join(RESULTS_DIR, f"{safe_alg}_{safe_func}_results_b.png")
+    plt.savefig(fp_b, dpi=300, bbox_inches="tight")
     plt.close()
-
-    print(f"  Plot saved -> {filepath}")
+    print(f"  Plot saved -> {fp_b}")
 
 
 def plot_comparison(
@@ -297,15 +310,32 @@ def plot_comparison(
 ) -> None:
     """
     Plot convergence curves of multiple algorithms on the same function.
+
+    Also saves comparison data to JSON for later regeneration by
+    generate_paper_figures.py.
     """
     _ensure_results_dir()
 
+    safe_func = function_name.lower().replace(" ", "_")
+
+    # -- Save comparison data to JSON --
+    json_data = {
+        "function_name": function_name,
+        "algorithm_names": algorithm_names,
+        "curves": {},
+    }
+    for alg_name in algorithm_names:
+        if alg_name in all_results:
+            res = all_results[alg_name]
+            json_data["curves"][alg_name] = {
+                "convergence_mean": [float(v) for v in res["convergence_mean"]],
+            }
+    json_path = os.path.join(RESULTS_DIR, f"comparison_{safe_func}_data.json")
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, indent=2)
+
+    # -- Single convergence comparison figure --
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    fig.suptitle(
-        f"Algorithm Comparison on {function_name}",
-        fontsize=14,
-        fontweight="bold",
-    )
 
     colors = [
         "#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA",
@@ -322,12 +352,12 @@ def plot_comparison(
 
     ax.set_xlabel("Iteration", fontsize=11)
     ax.set_ylabel("Best Fitness (log scale)", fontsize=11)
-    ax.set_title("Convergence Comparison", fontsize=12)
+    ax.set_title(f"Algorithm Comparison on {function_name}",
+                 fontsize=13, fontweight="bold")
     ax.legend(fontsize=9, loc="upper right")
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    safe_func = function_name.lower().replace(" ", "_")
     filename = f"comparison_{safe_func}.png"
     filepath = os.path.join(RESULTS_DIR, filename)
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
@@ -342,7 +372,12 @@ def plot_ablation(
     variant_names: list[str],
 ) -> None:
     """
-    Plot ablation study: convergence curves + bar chart of final fitness.
+    Plot ablation study as two separate high-quality figures:
+      - ablation_{func}_a.png  — Convergence curves of all variants
+      - ablation_{func}_b.png  — Bar chart of mean final fitness
+
+    Also saves ablation data to JSON for later regeneration by
+    generate_paper_figures.py.
 
     Parameters
     ----------
@@ -355,20 +390,32 @@ def plot_ablation(
     """
     _ensure_results_dir()
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-    fig.suptitle(
-        f"Ablation Study on {function_name}",
-        fontsize=14,
-        fontweight="bold",
-    )
+    safe_func = function_name.lower().replace(" ", "_")
+
+    # -- Save ablation data to JSON --
+    json_data = {
+        "function_name": function_name,
+        "variant_names": variant_names,
+        "variants": {},
+    }
+    for name in variant_names:
+        if name in ablation_results:
+            res = ablation_results[name]
+            json_data["variants"][name] = {
+                "convergence_mean": [float(v) for v in res["convergence_mean"]],
+                "mean": float(res["mean"]),
+            }
+    json_path = os.path.join(RESULTS_DIR, f"ablation_{safe_func}_data.json")
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, indent=2)
 
     colors = [
         "#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA", "#00ACC1",
         "#D81B60", "#546E7A", "#FFB300", "#00897B",
     ]
 
-    # -- Convergence curves --
-    ax1 = axes[0]
+    # -- Figure (a): Convergence curves --
+    fig, ax1 = plt.subplots(figsize=(10, 6))
     for i, name in enumerate(variant_names):
         if name in ablation_results:
             res = ablation_results[name]
@@ -379,12 +426,19 @@ def plot_ablation(
             ax1.semilogy(iters, mean_c, linewidth=2, label=short, color=color)
     ax1.set_xlabel("Iteration", fontsize=11)
     ax1.set_ylabel("Best Fitness (log scale)", fontsize=11)
-    ax1.set_title("Convergence Comparison", fontsize=12)
+    ax1.set_title(f"Ablation Study on {function_name} — Convergence Comparison",
+                  fontsize=13, fontweight="bold")
     ax1.legend(fontsize=9)
     ax1.grid(True, alpha=0.3)
 
-    # -- Bar chart of mean final fitness --
-    ax2 = axes[1]
+    plt.tight_layout()
+    fp_a = os.path.join(RESULTS_DIR, f"ablation_{safe_func}_a.png")
+    plt.savefig(fp_a, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Ablation plot saved -> {fp_a}")
+
+    # -- Figure (b): Bar chart of mean final fitness --
+    fig, ax2 = plt.subplots(figsize=(10, 6))
     means = []
     labels = []
     bar_colors = []
@@ -396,7 +450,8 @@ def plot_ablation(
 
     bars = ax2.bar(labels, means, color=bar_colors, width=0.6)
     ax2.set_ylabel("Mean Best Fitness", fontsize=11)
-    ax2.set_title("Final Performance", fontsize=12)
+    ax2.set_title(f"Ablation Study on {function_name} — Final Performance",
+                  fontsize=13, fontweight="bold")
     ax2.set_yscale("log")
     for bar, val in zip(bars, means):
         ax2.text(
@@ -408,13 +463,10 @@ def plot_ablation(
     ax2.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
-    safe_func = function_name.lower().replace(" ", "_")
-    filename = f"ablation_{safe_func}.png"
-    filepath = os.path.join(RESULTS_DIR, filename)
-    plt.savefig(filepath, dpi=300, bbox_inches="tight")
+    fp_b = os.path.join(RESULTS_DIR, f"ablation_{safe_func}_b.png")
+    plt.savefig(fp_b, dpi=300, bbox_inches="tight")
     plt.close()
-
-    print(f"  Ablation plot saved -> {filepath}")
+    print(f"  Ablation plot saved -> {fp_b}")
 
 
 def save_summary_json(all_results: dict) -> None:
