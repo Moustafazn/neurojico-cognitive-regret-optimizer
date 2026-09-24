@@ -1,31 +1,27 @@
 """
 Comparison algorithms for benchmarking NCRO against state-of-the-art.
 
-Classic baselines:
-  - PSO, DE, GWO, WOA, HHO, ABC, SCA
-
-Adaptive DE family (CEC competition winners):
-  - SHADE (2013), L-SHADE (2014), jSO (CEC 2017)
-  - NL-SHADE-LBC (CEC 2022 winner), L-SRTDE (CEC 2024)
+Recent and competitive algorithms (CEC competition winners + gold standard):
+  - CMA-ES          — Gold-standard evolution strategy (Hansen 2001/2016)
+  - L-SHADE         — CEC 2014 winner, adaptive DE with pop. reduction
+  - jSO             — CEC 2017 winner, weighted mutation adaptive DE
+  - IMODE           — CEC 2020 winner, multi-operator adaptive DE
+  - NL-SHADE-LBC    — CEC 2022 winner, non-linear pop. reduction + bias change
+  - L-SRTDE         — CEC 2024, success-rate-based adaptive DE
 """
 
-from .pso import PSOOptimizer
-from .de import DEOptimizer
-from .shade import SHADEOptimizer
+from .cmaes import CMAESOptimizer
 from .lshade import LSHADEOptimizer
 from .jso import jSOOptimizer
+from .imode import IMODEOptimizer
 from .nlshade_lbc import NLSHADELBCOptimizer
 from .lsrtde import LSRTDEOptimizer
-from .gwo import GWOOptimizer
-from .woa import WOAOptimizer
-from .hho import HHOOptimizer
-from .abc import ABCOptimizer
-from .sca import SCAOptimizer
 
 __all__ = [
-    "PSOOptimizer", "DEOptimizer",
-    "GWOOptimizer", "WOAOptimizer",
-    "HHOOptimizer", "ABCOptimizer", "SCAOptimizer",
-    "SHADEOptimizer", "LSHADEOptimizer",
-    "jSOOptimizer", "NLSHADELBCOptimizer", "LSRTDEOptimizer",
+    "CMAESOptimizer",
+    "LSHADEOptimizer",
+    "jSOOptimizer",
+    "IMODEOptimizer",
+    "NLSHADELBCOptimizer",
+    "LSRTDEOptimizer",
 ]

@@ -1,13 +1,13 @@
 """
-Neurojico Cognitive Regret Optimizer (NCRO)
+Neurojico Cognitive Regret Optimizer (NCRO).
 
-A novel metaheuristic optimization algorithm based on cognitive regret theory.
-Each agent generates both an actual and a counterfactual (alternative) decision,
-computes cognitive regret from their comparison, and uses accumulated regret
-memory to adaptively balance exploration and exploitation.
+A metaheuristic optimizer based on cognitive regret theory.
+Each agent generates actual and counterfactual decisions,
+computes cognitive regret, and uses accumulated regret memory
+to adaptively balance exploration and exploitation.
 
 Motion equation:
-  x_i(t+1) = x_i(t) + w·V_i + α(t)(1+M_R)·E_i + β(t)(1-M_R)·H_i + γ(t)·C·D_C
+  x_i' = x_i + w·V_i + α(1+M_R)·E_i + β(1-M_R)·H_i + γ·C·D_C
 """
 
 from .optimizer import NCROOptimizer, NCROResult

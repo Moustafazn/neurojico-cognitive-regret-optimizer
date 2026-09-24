@@ -18,11 +18,17 @@ from .benchmarks import BENCHMARK_FUNCTIONS
 
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "results")
+TABLES_DIR = os.path.join(RESULTS_DIR, "tables")
+FIGURES_DIR = os.path.join(RESULTS_DIR, "figures")
+DATA_DIR = os.path.join(RESULTS_DIR, "data")
 
 
 def _ensure_results_dir():
     """Create results directory if it doesn't exist."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(TABLES_DIR, exist_ok=True)
+    os.makedirs(FIGURES_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
 
 def run_experiment(
@@ -95,6 +101,7 @@ def run_experiment(
             bounds=bounds,
             population_size=population_size,
             max_iter=max_iter,
+            max_fes=max_iter * population_size,
             seed=run,
             **optimizer_kwargs,
         )
@@ -137,7 +144,19 @@ def run_experiment(
 
     # Aggregate statistics
     best_fitnesses = np.array(all_best_fitness)
-    convergence_curves = np.array(all_convergence)
+
+    # Convergence curves may differ in length across runs when the
+    # optimizer uses a budget-driven loop with variable per-iteration
+    # cost (e.g. NCRO Phase 1 = 1 FE vs Phase 2 = 3 FEs).  Pad
+    # shorter curves with their last (best) value so we can stack them.
+    max_len = max(len(c) for c in all_convergence)
+    padded = []
+    for c in all_convergence:
+        if len(c) < max_len:
+            pad_val = c[-1] if len(c) > 0 else np.inf
+            c = np.concatenate([c, np.full(max_len - len(c), pad_val)])
+        padded.append(c)
+    convergence_curves = np.array(padded)
 
     results = {
         "algorithm": algorithm_name,
@@ -230,7 +249,7 @@ def plot_results(results: dict, function_name: str, algorithm_name: str = "NCRO"
     safe_func = function_name.lower().replace(" ", "_")
 
     # -- Save plot data to JSON for later regeneration --
-    json_path = os.path.join(RESULTS_DIR, f"{safe_alg}_{safe_func}_plot_data.json")
+    json_path = os.path.join(DATA_DIR, f"{safe_alg}_{safe_func}_plot_data.json")
     plot_data = {
         "algorithm_name": algorithm_name,
         "function_name": function_name,
@@ -266,7 +285,7 @@ def plot_results(results: dict, function_name: str, algorithm_name: str = "NCRO"
     ax1.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    fp_a = os.path.join(RESULTS_DIR, f"{safe_alg}_{safe_func}_results_a.png")
+    fp_a = os.path.join(FIGURES_DIR, f"{safe_alg}_{safe_func}_results_a.png")
     plt.savefig(fp_a, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Plot saved -> {fp_a}")
@@ -297,7 +316,7 @@ def plot_results(results: dict, function_name: str, algorithm_name: str = "NCRO"
     ax2.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
-    fp_b = os.path.join(RESULTS_DIR, f"{safe_alg}_{safe_func}_results_b.png")
+    fp_b = os.path.join(FIGURES_DIR, f"{safe_alg}_{safe_func}_results_b.png")
     plt.savefig(fp_b, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Plot saved -> {fp_b}")
@@ -330,7 +349,7 @@ def plot_comparison(
             json_data["curves"][alg_name] = {
                 "convergence_mean": [float(v) for v in res["convergence_mean"]],
             }
-    json_path = os.path.join(RESULTS_DIR, f"comparison_{safe_func}_data.json")
+    json_path = os.path.join(DATA_DIR, f"comparison_{safe_func}_data.json")
     with open(json_path, "w") as f:
         json.dump(json_data, f, indent=2)
 
@@ -359,7 +378,7 @@ def plot_comparison(
 
     plt.tight_layout()
     filename = f"comparison_{safe_func}.png"
-    filepath = os.path.join(RESULTS_DIR, filename)
+    filepath = os.path.join(FIGURES_DIR, filename)
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -405,7 +424,7 @@ def plot_ablation(
                 "convergence_mean": [float(v) for v in res["convergence_mean"]],
                 "mean": float(res["mean"]),
             }
-    json_path = os.path.join(RESULTS_DIR, f"ablation_{safe_func}_data.json")
+    json_path = os.path.join(DATA_DIR, f"ablation_{safe_func}_data.json")
     with open(json_path, "w") as f:
         json.dump(json_data, f, indent=2)
 
@@ -432,7 +451,7 @@ def plot_ablation(
     ax1.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    fp_a = os.path.join(RESULTS_DIR, f"ablation_{safe_func}_a.png")
+    fp_a = os.path.join(FIGURES_DIR, f"ablation_{safe_func}_a.png")
     plt.savefig(fp_a, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Ablation plot saved -> {fp_a}")
@@ -448,22 +467,25 @@ def plot_ablation(
             labels.append(name.replace("NCRO (Full)", "Full").replace("NCRO_", "No\n"))
             bar_colors.append(colors[i % len(colors)])
 
-    bars = ax2.bar(labels, means, color=bar_colors, width=0.6)
+    # Replace exact zeros with a tiny floor so log-scale rendering succeeds
+    plot_means = [m if m > 0 else 1e-30 for m in means]
+    bars = ax2.bar(labels, plot_means, color=bar_colors, width=0.6)
     ax2.set_ylabel("Mean Best Fitness", fontsize=11)
     ax2.set_title(f"Ablation Study on {function_name} — Final Performance",
                   fontsize=13, fontweight="bold")
     ax2.set_yscale("log")
     for bar, val in zip(bars, means):
+        height = max(bar.get_height(), 1e-30)
         ax2.text(
             bar.get_x() + bar.get_width() / 2,
-            bar.get_height() * 1.1,
+            height * 1.1,
             f"{val:.2e}",
             ha="center", va="bottom", fontsize=8, fontweight="bold",
         )
     ax2.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
-    fp_b = os.path.join(RESULTS_DIR, f"ablation_{safe_func}_b.png")
+    fp_b = os.path.join(FIGURES_DIR, f"ablation_{safe_func}_b.png")
     plt.savefig(fp_b, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Ablation plot saved -> {fp_b}")
@@ -493,7 +515,7 @@ def save_summary_json(all_results: dict) -> None:
                 "accuracy": res["accuracy"],
             }
 
-    filepath = os.path.join(RESULTS_DIR, "final_summary.json")
+    filepath = os.path.join(DATA_DIR, "final_summary.json")
     with open(filepath, "w") as f:
         json.dump(summary, f, indent=2)
 

@@ -1,228 +1,54 @@
 # Neurojico Cognitive Regret Optimizer (NCRO)
 
-A novel metaheuristic optimization algorithm that uses **cognitive regret** and **counterfactual learning** to adaptively balance exploration and exploitation. Each agent learns not only from the decision it made, but also from the decision it did NOT make.
-
-## Core Motion Equation
-
-```
-x_i(t+1) = x_i(t)
-          + w(t,M_R) · V_i(t)                   ← regret-aware momentum
-          + α(t) · [1 + M_R(i)] · E_i(t)        ← regret amplifies exploration
-          + β(t) · [1 - M_R(i)] · H_i(t)        ← regret dampens exploitation
-          + γ(t) · C_i(t) · D_C(i,t)             ← counterfactual direction force
-```
-
-Where:
-- **V_i** = x_i(t) − x_i(t−1): velocity (direction agent moved last step)
-- **w** = (1−M_R)·0.4·(1−τ): momentum weight — low regret = keep going, high regret = stop and reconsider
-- **E_i**: regret-driven exploration direction (standard differential when converging; multi-directional long-distance scouting when stuck)
-- **H_i** = c₁·r₁·(p_i − x_i) + c₂·r₂·(g − x_i) (PSO-style exploitation)
-- **D_C** = Y_C − x_i (counterfactual direction — learning from alternatives)
-- **M_R** ∈ [0,1]: accumulated regret memory (EMA-smoothed)
-- **C_i** ∈ [0,1]: counterfactual success memory (EMA-smoothed)
-
-### Regret-Driven Exploration
-
-The exploration direction E_i adapts based on each agent's regret state:
-- **Low regret** (agent doing well): standard `E_i = x_r1 − x_r2` with regret-proportional minimum step
-- **High regret + stuck** (M_R > 0.25, no progress): long-distance scouting toward 5 distant areas:
-  1. Opposite of global best (search unexplored regions)
-  2. Random search space position (pure exploration)
-  3. Opposite of personal best (escape personal basin)
-  4. Another agent's personal best (information sharing)
-  5. Lévy flight from global best (heavy-tailed escape for deceptive landscapes; Mantegna 1994)
-- Scout step size scales with regret: `E_i *= (0.3 + 0.7·M_R)` — higher regret = larger radius
-
-### Regret-Modulated Position-Relative Noise *(New)*
-
-Noise perturbation adapts to two cognitive signals:
-- **Distance to best**: agents near the optimum have less "cognitive uncertainty" → smaller noise (Van Hoeck 2015: "nearest possible world")
-- **Regret level**: high regret boosts noise to enable escape from local optima (Yager 2017: regret modulates decision intensity)
-
-```
-noise_scale = min(max(‖X_i − G‖ × (1 + 5·M_R), ε), range/√D)
-```
-
-### Dimension-Selective Counterfactual Perturbation *(New)*
-
-Perturb a random subset of dimensions, not all D simultaneously:
-- **Early search**: many dimensions (broad exploration)
-- **Late search**: fewer dimensions (focused precision)
-- Grounded in Van Hoeck (2015): "counterfactuals require the fewest independent changes"
-
-### Dimension-Adaptive Noise Coefficient *(New)*
-
-Noise coefficient scales by 1/√D to normalize total perturbation energy across dimensions. Prevents multiplicative blowup in product-structure functions (e.g. Schwefel_2.22 in Composition2) at high D.
-
-```
-noise_coeff = 0.02 / √D
-```
-
-### Opposition-Based Learning (OBL) Initialization *(New)*
-
-Generate N random + N opposite candidates, keep best N. Classical OBL (Tizhoosh 2005) remains the standard initialization strategy in 2025–2026 optimizers (Shaban & Zeebaree 2026; Yu et al. 2026). For functions with optima near boundaries (e.g. Schwefel at x*=420.97 in [-500,500]), the opposite of a random point near -420 lands near +420 — directly at the optimum.
-
-### Stagnation-Triggered Opposition Jump *(New)*
-
-When the global best stagnates for 50 iterations, try the opposite point G_opp = L+U−G. For deceptive functions, the true optimum may be in the opposite basin. Builds on opposition-based DE (Rahnamayan et al. 2008) and recent fine-grained stagnation detection (Bai et al. 2026) and stagnation-gated frameworks (Aydemir 2026).
-
-### Late-Stage Noise Suppression *(New)*
-
-When converged (τ > 0.9 and diversity < 0.01), suppress noise completely for machine-precision convergence. When cognitive uncertainty is low, perturbation only degrades final quality (Van Hoeck 2015). Consistent with stagnation-detection-based mutation suppression in recent PSO variants (Zhang et al. 2026).
-
-## Key Mechanisms
-
-| Component | Formula | Purpose |
-|-----------|---------|---------|
-| Actual candidate Y_A | x_i + q·α·E + (1−q)·β·H | What the agent decided |
-| Counterfactual Y_C | x_i + (1−q)·α·E + q·β·H | What it could have decided |
-| Cognitive regret | max(0, F(Y_A) − F(Y_C)) / (\|F_A\| + \|F_C\| + ε) | How much worse was the choice? |
-| Regret memory | ρ·M_R + (1−ρ)·R̃_i | Smoothed learning from regret |
-| CF success memory | ρ_c·C_i + (1−ρ_c)·SF_i | How often alternatives win |
-| Adaptive q | q₀(t) + η_R·M_R + η_C·C_i − η_P·P_i | Per-agent E/E balance |
-| Selection | greedy among {x_i, Y_A, Y_C, candidate} | Best of 4 candidates survives |
+A novel metaheuristic optimization algorithm that uses **cognitive regret** and **counterfactual learning** to adaptively balance exploration and exploitation.
 
 ## Comparison Algorithms
 
-| Algorithm | Year | Type | Reference |
-|-----------|------|------|-----------|
-| PSO | 1995 | Classic swarm intelligence | Kennedy & Eberhart |
-| DE | 1997 | Classic differential evolution | Storn & Price |
-| GWO | 2014 | Grey wolf social hierarchy | Mirjalili et al. |
-| WOA | 2016 | Whale bubble-net hunting | Mirjalili & Lewis |
-| HHO | 2019 | Harris hawks cooperative hunting | Heidari et al. |
-| ABC | 2005 | Honey bee foraging behavior | Karaboga & Basturk |
-| SCA | 2016 | Sine cosine oscillatory search | Mirjalili |
-
-## Ablation Study
-
-Each variant removes exactly ONE component to measure its contribution:
-
-| Variant | What is removed | Motion equation change |
-|---------|-----------------|----------------------|
-| NCRO (Full) | Nothing — complete algorithm | w·V + α(1+M_R)·E + β(1−M_R)·H + γ·C·D_C |
-| NCRO-NoRegret | Regret signal (M_R forced to 0) | α·E + β·H + γ·C·D_C |
-| NCRO-NoCF | Counterfactual candidate + direction | α·E + β·H (no γ·C·D_C) |
-| NCRO-NoAdaptEE | Adaptive q (fixed schedule only) | Forces unchanged, q = q₀(t) |
-| NCRO-NoMemory | EMA memory (uses instant values) | Uses instant R, instant C |
-| NCRO-NoMomentum | Regret-aware momentum | α(1+M_R)·E + β(1−M_R)·H + γ·C·D_C (no w·V) |
-
-## Benchmark Functions (12 total, 4 categories)
-
-| Category | Function | Domain | F* | Key Characteristic |
-|----------|----------|--------|----|--------------------|
-| **Unimodal** | Sphere | [-100, 100] | 0 | Smooth, convex |
-| | Rosenbrock | [-30, 30] | 0 | Narrow curved valley |
-| | Zakharov | [-10, 10] | 0 | Non-convex unimodal |
-| **Multimodal** | Rastrigin | [-5.12, 5.12] | 0 | Many local optima |
-| | Ackley | [-32.768, 32.768] | 0 | Flat outer region |
-| | Griewank | [-600, 600] | 0 | Regular multimodal |
-| | Schwefel | [-500, 500] | 0 | Deceptive, distant optimum |
-| | Levy | [-10, 10] | 0 | Multimodal with ridges |
-| **Hybrid** | Hybrid1 | [-100, 100] | 0 | Sphere + Rastrigin + Rosenbrock (split dims) |
-| | Hybrid2 | [-100, 100] | 0 | Ackley + Griewank + Levy (split dims) |
-| **Composition** | Composition1 | [-100, 100] | 0 | 5 shifted functions (Gaussian-weighted) |
-| | Composition2 | [-100, 100] | 0 | 5 shifted functions (different landscape) |
-
-## Experimental Settings
-
-| Parameter | Value |
-|-----------|-------|
-| Population Size (N) | 30 |
-| Maximum Iterations (T_max) | 500 |
-| Independent Runs | 30 |
-| Dimensionalities (D) | 10, 30, 50, 100 |
-| Benchmark Functions | 12 (3 unimodal + 5 multimodal + 2 hybrid + 2 composition) |
-| Stopping Criterion | Maximum iterations |
-| Fair Comparison | NCRO: 500 iter (3N FEs/iter) = 45,000 FEs; Others: 1500 iter (N FEs/iter) = 45,000 FEs |
+| Algorithm | Type | Competition |
+|-----------|------|-------------|
+| CMA-ES | Evolution strategy | Gold standard (Hansen 2001) |
+| L-SHADE | Adaptive DE | CEC 2014 winner |
+| jSO | Adaptive DE | CEC 2017 winner |
+| IMODE | Multi-operator DE | CEC 2020 winner |
+| NL-SHADE-LBC | Adaptive DE | CEC 2022 winner |
+| L-SRTDE | Adaptive DE | CEC 2024 |
 
 ## Project Structure
 
 ```
 neurojico-cognitive-regret-optimizer/
-├── main.py                          # Full experiment pipeline
-│                                    #   Part 1: Benchmark comparison (8 algs × 12 funcs × 4 dims)
-│                                    #   Part 2: Ablation study (6 variants × 12 funcs × 4 dims)
-│                                    #   Part 3: Scalability analysis (D=10→100)
-│                                    #   Part 4: Runtime evaluation
-├── requirements.txt                 # Dependencies (numpy, matplotlib, scipy)
-├── pyproject.toml                   # Project config
-├── README.md
-├── notebook/
-│   ├── literature_review.md         # 50 references (1982–2026)
-│   └── theoretical_foundation.md    # Mathematical novelty & theory
-├── report/
-│   └── progress_report.tex          # LaTeX paper
-├── results/                         # Auto-generated output (CSV + PNG)
-│   ├── benchmark_comparison.csv     # All algorithms × functions × dims
-│   ├── ablation_study.csv           # All ablation variants
-│   ├── friedman_rankings.csv        # Friedman rankings + overall averages
-│   ├── statistical_tests.csv        # Wilcoxon p-values + W/L/T summary
-│   ├── runtime_analysis.csv         # Runtime per run & per iteration
-│   ├── scalability_analysis.csv     # NCRO performance across D
-│   ├── comparison_*.png             # Convergence plots (key functions, D=30)
-│   ├── ablation_*.png               # Ablation convergence + bar charts
-│   ├── ranking_summary.png          # Friedman ranking bar chart
-│   ├── scalability_convergence.png  # NCRO convergence across dimensions
-│   ├── runtime_comparison.png       # Runtime bar chart
-│   └── statistical_analysis.json    # Full statistical reference
-└── ncro/
-    ├── __init__.py
-    ├── optimizer.py                 # NCRO core algorithm
-    ├── benchmarks.py               # 12 benchmark functions (4 categories)
-    ├── experiment.py               # Runner + plotting + timing
-    ├── ablation.py                 # 5 ablation variants + full (6 total)
-    ├── statistics.py               # Wilcoxon signed-rank + Friedman tests
-    └── comparisons/
-        ├── base.py                 # Shared OptResult dataclass
-        ├── pso.py                  # PSO (1995)
-        ├── de.py                   # DE/rand/1/bin (1997)
-        ├── gwo.py                  # GWO (2014)
-        ├── woa.py                  # WOA (2016)
-        ├── hho.py                  # HHO (2019)
-        ├── abc.py                  # ABC (2005)
-        └── sca.py                  # SCA (2016)
+├── main.py                          # Single entry point
+├── ncro/microgrid_experiment.py     # Microgrid comparison
+├── ncro/variant_experiment.py       # Controlled-variant
+├── requirements.txt
+├── ncro/
+│   ├── optimizer.py                 # NCRO core algorithm
+│   ├── benchmarks.py                # Benchmark functions
+│   ├── experiment.py                # Runner + plotting
+│   ├── ablation.py                  # Ablation variants
+│   └── statistics.py                # Wilcoxon + Friedman
+└── results/                         # Auto-generated CSV + PNG
 ```
 
 ## How to Run
 
 ```bash
 pip install -r requirements.txt
+
+# Full experiment
 python main.py
+
+# Quick validation
+python main.py --quick
 ```
 
-### Output
+## Citation
 
-The experiment generates **6 CSV tables** and **7+ PNG plots** in the `results/` folder:
-
-**CSV Tables:**
-- `benchmark_comparison.csv` — All 8 algorithms × 12 functions × 4 dimensions
-- `ablation_study.csv` — 6 NCRO variants with ER, XR, CSR, regret metrics
-- `friedman_rankings.csv` — Per-test-case + overall average rankings
-- `statistical_tests.csv` — Wilcoxon signed-rank p-values + win/loss/tie summary
-- `runtime_analysis.csv` — Average runtime per run and per iteration
-- `scalability_analysis.csv` — NCRO quality metrics across D={10,30,50,100}
-
-**Plots:**
-- `comparison_*.png` — Convergence curves for key functions (D=30)
-- `ablation_*.png` — Ablation convergence + bar charts
-- `ranking_summary.png` — Overall Friedman ranking bar chart
-- `scalability_convergence.png` — NCRO convergence across all dimensions
-- `runtime_comparison.png` — Computational cost comparison
-
-## Performance Metrics
-
-| Metric | Formula | What it measures |
-|--------|---------|-----------------|
-| Best Fitness | F_best(t) = min_i F(x_i(t)) | Solution quality |
-| Accuracy | Acc = \|F_best − F*\| | Distance from optimum |
-| Exploration Ratio | ER = N_exploration / N_total | Fraction exploring |
-| Exploitation Ratio | XR = N_exploitation / N_total | Fraction exploiting |
-| CF Success Rate | CSR = N(F(Y_C) < F(Y_A)) / N | Counterfactual advantage |
-| Average Regret | R̄ = (1/N) Σ R_i | Population regret level |
-
-## Code Availability
-
-The complete source code for NCRO is publicly available at:
-
-🔗 **https://github.com/Moustafazn/neurojico-cognitive-regret-optimizer**
+```bibtex
+@misc{hassanien2026neurojico,
+  title  = {A Neurojico-Inspired Optimizer based on Cognitive Regret, Counterfactual Reasoning, and Adaptive Memory},
+  author = {Hassanien, Aboul Ella and Zein, Moustafa},
+  year   = {2026},
+  url    = {https://github.com/Moustafazn/neurojico-cognitive-regret-optimizer},
+}
+```
