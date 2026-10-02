@@ -6,17 +6,6 @@ Most population-based metaheuristics use what they discover as it comes during t
 
 A novel metaheuristic optimization algorithm that uses **cognitive regret** and **counterfactual learning** to adaptively balance exploration and exploitation.
 
-## Comparison Algorithms
-
-| Algorithm | Type | Competition |
-|-----------|------|-------------|
-| CMA-ES | Evolution strategy | Gold standard (Hansen 2001) |
-| L-SHADE | Adaptive DE | CEC 2014 winner |
-| jSO | Adaptive DE | CEC 2017 winner |
-| IMODE | Multi-operator DE | CEC 2020 winner |
-| NL-SHADE-LBC | Adaptive DE | CEC 2022 winner |
-| L-SRTDE | Adaptive DE | CEC 2024 |
-
 ## Project Structure
 
 ```
